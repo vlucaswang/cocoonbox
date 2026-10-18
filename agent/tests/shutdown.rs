@@ -7,10 +7,9 @@ use std::time::{Duration, Instant};
 
 use cocoonbox_agent::pb::agents_client::AgentsClient;
 use cocoonbox_agent::pb::session_client::SessionClient;
-use cocoonbox_agent::pb::{self, event, screen_client_frame, transcript_entry::Body};
+use cocoonbox_agent::pb::{self, event, transcript_entry::Body};
 use cocoonbox_agent::store::Store;
 use serde_json::json;
-use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tonic::Request;
 use tonic::metadata::MetadataValue;
@@ -31,19 +30,6 @@ async fn hanging_gw() -> String {
     tokio::spawn(async move {
         let mut held = Vec::new();
         while let Ok((stream, _)) = listener.accept().await {
-            held.push(stream);
-        }
-    });
-    addr
-}
-
-async fn banner_vnc() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap().to_string();
-    tokio::spawn(async move {
-        let mut held = Vec::new();
-        while let Ok((mut stream, _)) = listener.accept().await {
-            stream.write_all(b"RFB 003.008\n").await.unwrap();
             held.push(stream);
         }
     });
@@ -79,7 +65,6 @@ async fn sigterm_with_open_streams_and_a_running_turn_exits_quickly() {
             std::os::unix::fs::MetadataExt::uid(&dir.path().metadata().unwrap()).to_string(),
         )
         .env("TOOLHOST_SOCKET", dir.path().join("none.sock"))
-        .env("VNC_ADDR", banner_vnc().await)
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
@@ -103,18 +88,6 @@ async fn sigterm_with_open_streams_and_a_running_turn_exits_quickly() {
         .await
         .unwrap()
         .into_inner();
-    let (tx, rx) = tokio::sync::mpsc::channel(1);
-    tx.send(pb::ScreenClientFrame {
-        body: Some(screen_client_frame::Body::Open(pb::ScreenOpen {})),
-    })
-    .await
-    .unwrap();
-    let mut screen = session
-        .screen(authed(tokio_stream::wrappers::ReceiverStream::new(rx)))
-        .await
-        .unwrap()
-        .into_inner();
-    assert!(screen.message().await.unwrap().is_some());
 
     let http = reqwest::Client::new();
     let init = http

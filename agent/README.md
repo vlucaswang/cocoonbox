@@ -37,7 +37,6 @@ toolhost: shell · files · CDP browser · cua-driver
 | `store.rs` | SQLite tables: agents, turns, transcript entries (global monotonic `seq`), client-nonce dedupe |
 | `bus.rs` | Event fan-out. Offsets start at boot time in µs. A bounded replay ring serves `Events(from_offset)` |
 | `mcp.rs` | MCP Streamable HTTP at `/mcp` for external agents (mode B), next to gRPC on the same listener |
-| `screen.rs` | Raw RFB relay to `127.0.0.1:5900` after the `open` frame |
 | `toolhost/` | `rpc.rs` (u32-length-prefixed JSON, one call per connection), `shell.rs`, `files.rs`, `browser.rs` (Chrome over CDP), `cua.rs` (cua-driver socket client) |
 | `prompts.rs`, `tools.rs` | System prompts and tool schemas |
 
@@ -106,7 +105,6 @@ Optional overrides with contract defaults, used by tests and non-standard layout
 | `CB_IDENTITY_PATH` | `/run/cocoonbox-identity/identity` |
 | `CB_IDENTITY_OWNER` | `0` (root): the uid that must own the identity file and its directory |
 | `TOOLHOST_SOCKET` | `/run/cocoonbox/toolhost.sock` |
-| `VNC_ADDR` | `127.0.0.1:5900` |
 | `CB_WORKSPACE` | `/workspace` |
 | `CHROME_BIN` | `google-chrome` |
 | `CHROME_PROFILE` | `~/.config/cocoonbox-chrome` |

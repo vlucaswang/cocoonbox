@@ -14,7 +14,7 @@ use cocoonbox_agent::config::{Automation, ServeConfig, ToolhostConfig};
 use cocoonbox_agent::pb::agents_client::AgentsClient;
 use cocoonbox_agent::pb::session_client::SessionClient;
 use cocoonbox_agent::pb::{
-    self, event, exec_client_frame, exec_server_frame, screen_client_frame, transcript_entry::Body,
+    self, event, exec_client_frame, exec_server_frame, transcript_entry::Body,
 };
 use cocoonbox_agent::runner::Runtime;
 use cocoonbox_agent::toolhost::state::Root;
@@ -268,7 +268,6 @@ impl Harness {
             state_dir: dir.path().join("state"),
             toolhost_socket: toolhost_socket.clone(),
             offload_socket: dir.path().join("offload.sock"),
-            vnc_addr: fake_vnc().await,
             anthropic_messages,
             mcp_idle,
             mcp_prune_after,
@@ -729,26 +728,6 @@ fn fake_windows() -> Value {
         {"pid": 5, "window_id": 9, "app_name": "Xfce4-panel", "title": "hidden", "bounds": {"x": -9999, "y": -9999, "width": 3, "height": 3}, "z_index": 4},
         {"pid": 5, "window_id": 10, "app_name": "Xfce4-panel", "title": "panel", "bounds": {"x": 0, "y": 0, "width": 1280, "height": 27}, "z_index": 5}
     ])
-}
-
-async fn fake_vnc() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap().to_string();
-    tokio::spawn(async move {
-        loop {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            tokio::spawn(async move {
-                stream.write_all(b"RFB 003.008\n").await.unwrap();
-                let mut buf = [0u8; 64];
-                while let Ok(n) = stream.read(&mut buf).await {
-                    if n == 0 || stream.write_all(&buf[..n]).await.is_err() {
-                        break;
-                    }
-                }
-            });
-        }
-    });
-    addr
 }
 
 /// Kills the test's Chrome, found by its profile path, even when the test fails.
@@ -2597,31 +2576,16 @@ async fn untitled_agents_take_their_first_line_and_a_rename_wins() {
 }
 
 #[tokio::test]
-async fn screen_relays_raw_rfb_bytes() {
+async fn screen_is_the_edges() {
     let h = Harness::start(Vec::new(), false).await;
-    let mut session = h.session().await;
-    let (tx, rx) = tokio::sync::mpsc::channel(4);
-    tx.send(pb::ScreenClientFrame {
-        body: Some(screen_client_frame::Body::Open(pb::ScreenOpen {})),
-    })
-    .await
-    .unwrap();
-    let mut frames = session
+    let (_tx, rx) = tokio::sync::mpsc::channel(1);
+    let err = h
+        .session()
+        .await
         .screen(authed(tokio_stream_from(rx)))
         .await
-        .unwrap()
-        .into_inner();
-    let banner = frames.message().await.unwrap().unwrap();
-    assert_eq!(&banner.data[..], b"RFB 003.008\n");
-    tx.send(pb::ScreenClientFrame {
-        body: Some(screen_client_frame::Body::Data(bytes::Bytes::from_static(
-            b"RFB 003.008\n",
-        ))),
-    })
-    .await
-    .unwrap();
-    let echo = frames.message().await.unwrap().unwrap();
-    assert_eq!(&echo.data[..], b"RFB 003.008\n");
+        .unwrap_err();
+    assert_eq!(err.code(), Code::Unimplemented);
 }
 
 fn tokio_stream_from<T>(
@@ -4549,20 +4513,14 @@ async fn mcp_share_sessions_are_filtered_recorded_and_bound_to_their_share() {
         .plan(signed(pb::PlanRequest::default(), &reader))
         .await;
     assert_eq!(plan.unwrap_err().code(), Code::PermissionDenied);
-    let (tx, rx) = tokio::sync::mpsc::channel(4);
-    tx.send(pb::ScreenClientFrame {
-        body: Some(screen_client_frame::Body::Open(pb::ScreenOpen {})),
-    })
-    .await
-    .unwrap();
-    let mut frames = screen
-        .screen(signed(tokio_stream_from(rx), &reader))
-        .await
-        .unwrap()
-        .into_inner();
+    let (_tx, rx) = tokio::sync::mpsc::channel(1);
     assert_eq!(
-        &frames.message().await.unwrap().unwrap().data[..],
-        b"RFB 003.008\n"
+        screen
+            .screen(signed(tokio_stream_from(rx), &reader))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
     );
 
     let end = |target| {

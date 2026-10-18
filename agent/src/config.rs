@@ -11,7 +11,6 @@ use crate::toolhost::state::Root;
 const DEFAULT_STATE_DIR: &str = "/var/lib/cocoonbox";
 const DEFAULT_TOOLHOST_SOCKET: &str = "/run/cocoonbox/toolhost.sock";
 const DEFAULT_OFFLOAD_SOCKET: &str = "/run/cocoonbox/offload.sock";
-const DEFAULT_VNC_ADDR: &str = "127.0.0.1:5900";
 const DEFAULT_WORKSPACE: &str = "/workspace";
 const IDENTITY_PATH: &str = "/run/cocoonbox-identity/identity";
 const ROOT_UID: &str = "0";
@@ -77,7 +76,6 @@ pub struct ServeConfig {
     pub toolhost_socket: PathBuf,
     /// The offload inbox, whose changes become `offload` events.
     pub offload_socket: PathBuf,
-    pub vnc_addr: String,
     pub anthropic_messages: bool,
     pub mcp_idle: Duration,
     pub mcp_prune_after: Duration,
@@ -108,7 +106,6 @@ impl std::fmt::Debug for ServeConfig {
             .field("state_dir", &self.state_dir)
             .field("toolhost_socket", &self.toolhost_socket)
             .field("offload_socket", &self.offload_socket)
-            .field("vnc_addr", &self.vnc_addr)
             .field("anthropic_messages", &self.anthropic_messages)
             .field("mcp_idle", &self.mcp_idle)
             .field("mcp_prune_after", &self.mcp_prune_after)
@@ -142,7 +139,6 @@ impl ServeConfig {
             state_dir: optional("CB_STATE_DIR", DEFAULT_STATE_DIR).into(),
             toolhost_socket: optional("TOOLHOST_SOCKET", DEFAULT_TOOLHOST_SOCKET).into(),
             offload_socket: optional("OFFLOAD_SOCKET", DEFAULT_OFFLOAD_SOCKET).into(),
-            vnc_addr: optional("VNC_ADDR", DEFAULT_VNC_ADDR),
             anthropic_messages: optional("GW_ANTHROPIC_WIRE", "chat") == "messages",
             mcp_idle: MCP_IDLE,
             mcp_prune_after: MCP_PRUNE_AFTER,
@@ -275,7 +271,6 @@ mod tests {
             state_dir: "/s".into(),
             toolhost_socket: "/t".into(),
             offload_socket: "/o".into(),
-            vnc_addr: "v".into(),
             anthropic_messages: false,
             mcp_idle: MCP_IDLE,
             mcp_prune_after: MCP_PRUNE_AFTER,
