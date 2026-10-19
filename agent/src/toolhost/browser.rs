@@ -20,6 +20,21 @@ use zeroize::Zeroizing;
 use super::{rpc, timing};
 use crate::sys;
 
+/// The `browser_*` tools [`Browser::run`] answers; any other is refused before Chrome starts.
+pub(super) const TOOLS: [&str; 12] = [
+    "browser_close",
+    "browser_start",
+    "browser_end",
+    "browser_fetch",
+    "browser_tabs",
+    "browser_navigate",
+    "browser_snapshot",
+    "browser_show",
+    "browser_click",
+    "browser_fill",
+    "browser_type",
+    "browser_read",
+];
 const LAUNCH_WAIT: Duration = Duration::from_secs(60);
 const LOAD_WAIT: Duration = Duration::from_secs(15);
 const CHALLENGE_WAIT: Duration = Duration::from_secs(8);
@@ -349,6 +364,9 @@ impl Browser {
 
     /// Dispatches a `browser_*` tool in the window of `agent_id`.
     pub async fn run(&self, agent_id: &str, tool: &str, args: Value) -> Result<String, String> {
+        if !TOOLS.contains(&tool) {
+            return Err(format!("unknown browser tool {tool}"));
+        }
         if tool == "browser_close" {
             let _life = self.life.write().await;
             return self.close().await;

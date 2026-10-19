@@ -585,6 +585,12 @@ mod tests {
     #[tokio::test]
     async fn every_tool_of_the_shuttle_service_spec_is_one_the_toolhost_answers() {
         let dir = tempfile::tempdir().unwrap();
+        let cua = tokio::net::UnixListener::bind(dir.path().join("cua.sock")).unwrap();
+        tokio::spawn(async move {
+            while let Ok((conn, _)) = cua.accept().await {
+                drop(conn);
+            }
+        });
         let cfg = ToolhostConfig {
             socket: dir.path().join("toolhost.sock"),
             socket_group: String::new(),
@@ -603,6 +609,7 @@ mod tests {
             shuttle_socket: None,
         };
         let host = Host::new(&cfg);
+        host.flow_writes.send_modify(|w| *w += 1);
         let path =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../image/desk/service/cocoonbox.json");
         let spec: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
@@ -611,20 +618,23 @@ mod tests {
             if ["exec", "state_read", "state_write"].contains(&tool) {
                 continue;
             }
+            if tool.starts_with("browser_") {
+                assert!(browser::TOOLS.contains(&tool), "{tool} is no browser tool");
+                continue;
+            }
             let call = Call {
                 agent_id: "t".into(),
                 tool: tool.into(),
                 args: json!({}),
             };
-            if let Ok(out) = tokio::time::timeout(Duration::from_secs(2), host.dispatch(call)).await
-            {
-                assert!(
-                    !out.text.starts_with("unknown tool ")
-                        && !out.text.starts_with("unknown browser tool "),
-                    "{tool}: {}",
-                    out.text
-                );
-            }
+            let out = tokio::time::timeout(Duration::from_secs(30), host.dispatch(call))
+                .await
+                .unwrap_or_else(|_| panic!("{tool} gave no answer"));
+            assert!(
+                !out.text.starts_with("unknown tool "),
+                "{tool}: {}",
+                out.text
+            );
         }
     }
 
