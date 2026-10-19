@@ -15,6 +15,7 @@ ExecStart=/usr/local/bin/cocoon-shuttle serve /run/cocoonbox/desk.sock
 Restart=always
 RestartSec=2s
 OOMScoreAdjust=-900
+OOMPolicy=continue
 
 [Install]
 WantedBy=multi-user.target
