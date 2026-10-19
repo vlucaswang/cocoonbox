@@ -23,7 +23,6 @@ const DESK_GUIDE: &str = "/opt/desk/AGENTS.md";
 const ANDROID_GUIDE: &str = "/opt/android/AGENTS.md";
 const TOOLS_DIR: &str = "/etc/cocoonbox/tools.d";
 const ROUTING_DIR: &str = "/etc/cocoonbox/routing.d";
-const DESK_ENV: &str = "/etc/cocoonbox/desk.env";
 const MCP_IDLE: Duration = Duration::from_secs(600);
 const MCP_PRUNE_AFTER: Duration = Duration::from_secs(24 * 3600);
 const QUIESCE_WAIT: Duration = Duration::from_secs(30);
@@ -185,8 +184,6 @@ pub struct ToolhostConfig {
     pub plugins: Vec<Plugin>,
     /// The adb program of an Android box.
     pub adb_bin: PathBuf,
-    /// The gw endpoint of the desk runtime's model calls.
-    pub gw_base_url: Option<String>,
     /// shuttle's desk endpoint, which answers the desk verbs, model calls and runs when set.
     pub shuttle_socket: Option<PathBuf>,
 }
@@ -228,10 +225,6 @@ impl ToolhostConfig {
             automation: Automation::detect(),
             plugins: plugins::load(Path::new(&optional("TOOLS_DIR", TOOLS_DIR))),
             adb_bin: optional("ADB_BIN", "adb").into(),
-            gw_base_url: env::var("GW_BASE_URL")
-                .ok()
-                .filter(|v| !v.is_empty())
-                .or_else(|| env_file_value(Path::new(DESK_ENV), "GW_BASE_URL")),
         })
     }
 }
@@ -262,14 +255,6 @@ fn required(key: &str) -> Result<String, String> {
         Ok(v) if !v.is_empty() => Ok(v),
         _ => Err(format!("missing required env {key}")),
     }
-}
-
-fn env_file_value(path: &Path, key: &str) -> Option<String> {
-    let text = std::fs::read_to_string(path).ok()?;
-    text.lines()
-        .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
-        .map(str::to_owned)
-        .filter(|v| !v.is_empty())
 }
 
 fn optional(key: &str, default: &str) -> String {

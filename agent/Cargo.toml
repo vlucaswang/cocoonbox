@@ -30,10 +30,9 @@ prost = "0.14"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rusqlite = { version = "0.40", features = ["backup", "bundled"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
 shuttle-desk-core = { git = "https://github.com/loomhand/shuttle", tag = "v0.1.1" }
-shuttle-models = { git = "https://github.com/loomhand/shuttle", tag = "v0.1.1" }
 tar = { version = "0.4", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "process", "sync", "time", "fs", "signal"] }
 tokio-stream = { version = "0.1", default-features = false, features = ["net"] }

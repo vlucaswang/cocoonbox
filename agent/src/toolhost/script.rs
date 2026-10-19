@@ -553,8 +553,6 @@ async fn prune(shots: &Path) {
 mod tests {
     use super::*;
 
-    use tokio::io::AsyncWriteExt;
-
     #[tokio::test]
     async fn a_run_ends_when_main_returns_though_a_timer_or_server_stays_open() {
         let Some(node) = std::env::var_os("NODE_BIN") else {
@@ -611,127 +609,6 @@ mod tests {
             report["result"][1],
             dir.path().join("flows").to_string_lossy().as_ref(),
             "{report}"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_script_decision_reaches_gw_with_the_key_order_the_script_wrote() {
-        let Some(node) = std::env::var_os("NODE_BIN") else {
-            eprintln!("SKIP: no Node; set NODE_BIN to run");
-            return;
-        };
-        let gw = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}/v1", gw.local_addr().unwrap());
-        let (sent, mut got) = tokio::sync::mpsc::channel::<String>(1);
-        tokio::spawn(async move {
-            let (mut conn, _) = gw.accept().await.unwrap();
-            let mut raw = Vec::new();
-            let mut buf = [0u8; 4096];
-            let body = loop {
-                let n = conn.read(&mut buf).await.unwrap();
-                raw.extend_from_slice(&buf[..n]);
-                let text = String::from_utf8_lossy(&raw).into_owned();
-                if let Some((head, body)) = text.split_once("\r\n\r\n") {
-                    let len: usize = head
-                        .lines()
-                        .find_map(|l| {
-                            l.to_ascii_lowercase()
-                                .strip_prefix("content-length:")
-                                .map(|v| v.trim().parse().unwrap())
-                        })
-                        .unwrap();
-                    if body.len() >= len {
-                        break body.to_owned();
-                    }
-                }
-            };
-            sent.send(body).await.unwrap();
-            let reply = json!({"id": "g1", "model": "typesafe/jev-1.14-20261014", "usage": {},
-                "answers": {"pick": {"type": "choice", "choice": "zeta", "probabilities": {"zeta": 0.7, "alpha": 0.2, "mid": 0.1}},
-                    "on": {"type": "noul", "noul": 0.6}}})
-            .to_string();
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
-                reply.len()
-            );
-            conn.write_all(resp.as_bytes()).await.unwrap();
-        });
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("toolhost.sock");
-        let cfg = crate::config::ToolhostConfig {
-            socket: socket.clone(),
-            socket_group: "no-such-group".into(),
-            workspace: dir.path().into(),
-            chrome_bin: "false".into(),
-            chrome_profile: dir.path().join("chrome"),
-            cdp_port: 1,
-            cua_socket: dir.path().join("cua.sock"),
-            script_bin: node.clone().into(),
-            session_save: dir.path().join("session-save"),
-            home: dir.path().into(),
-            automation: crate::config::Automation::Desk,
-            plugins: Vec::new(),
-            adb_bin: "adb".into(),
-            gw_base_url: Some(base),
-            shuttle_socket: None,
-        };
-        tokio::spawn(crate::toolhost::run(cfg));
-        while !socket.exists() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        let scripts = Scripts::new(node.into(), dir.path().into(), socket, None);
-        let code = r"
-import { createConnection } from 'node:net'
-export function main() {
-  const questions = { pick: { type: 'choice', instructions: 'Which?', criteria: { zeta: 'z', alpha: 'a', mid: 'm' } }, on: { type: 'noul', instructions: 'On?' } }
-  const body = Buffer.from(JSON.stringify({ agent_id: 'desk', tool: 'model_decide', args: { state: { zz: 1, aa: 2 }, questions } }))
-  const head = Buffer.alloc(4)
-  head.writeUInt32BE(body.length)
-  return new Promise((resolve, reject) => {
-    const s = createConnection(process.env.TOOLHOST_SOCKET)
-    let got = Buffer.alloc(0)
-    s.on('connect', () => s.write(Buffer.concat([head, body])))
-    s.on('data', (d) => {
-      got = Buffer.concat([got, d])
-      if (got.length >= 4 && got.length >= 4 + got.readUInt32BE(0)) { s.destroy(); resolve(JSON.parse(got.subarray(4).toString())) }
-    })
-    s.on('error', reject)
-  })
-}";
-        let report = scripts
-            .run_script(
-                &scripts.bin,
-                Script::Code(code.to_owned()),
-                "{}",
-                dir.path(),
-                Duration::from_secs(20),
-                "run",
-            )
-            .await
-            .unwrap();
-        let body = got.recv().await.unwrap();
-        let at = |s: &str| body.find(s).unwrap_or_else(|| panic!("{s} in {body}"));
-        assert!(at("\"zz\"") < at("\"aa\""), "{body}");
-        assert!(at("\"pick\"") < at("\"on\""), "{body}");
-        assert!(
-            at("\"zeta\"") < at("\"alpha\"") && at("\"alpha\"") < at("\"mid\""),
-            "{body}"
-        );
-        let out: Value = serde_json::from_str(report["result"]["text"].as_str().unwrap()).unwrap();
-        assert_eq!(report["result"]["is_error"], false, "{report}");
-        assert_eq!(out["answers"]["pick"]["choice"], "zeta", "{out}");
-        assert_eq!(
-            out["served"]["build"], "typesafe/jev-1.14-20261014",
-            "{out}"
-        );
-        assert_eq!(
-            out["answers"]
-                .as_object()
-                .unwrap()
-                .keys()
-                .collect::<Vec<_>>(),
-            ["pick", "on"],
-            "{out}"
         );
     }
 

@@ -10,7 +10,6 @@ mod exec;
 pub(crate) mod files;
 pub(crate) mod flows;
 mod ground;
-mod model;
 pub mod rpc;
 mod scope;
 mod script;
@@ -42,7 +41,6 @@ use android::Android;
 use browser::Browser;
 use cua::Cua;
 use desk::Desk;
-use model::Models;
 use rpc::{Call, Client, Output};
 use script::{Scripts, ShuttleScreen};
 use shell::Shell;
@@ -63,7 +61,6 @@ struct Host {
     /// The screen tools of an Android box, in place of cua-driver.
     android: Option<Android>,
     desk: Desk,
-    models: Models,
     scripts: Scripts,
     /// The program of each plugin script tool, on a box that runs GUI plans.
     plugins: HashMap<String, PathBuf>,
@@ -96,7 +93,6 @@ impl Host {
             android: (cfg.automation == Automation::Android)
                 .then(|| Android::new(cfg.adb_bin.clone())),
             desk: Desk::new(shuttle.clone()),
-            models: Models::new(cfg.gw_base_url.as_deref()),
             scripts: Scripts::new(
                 cfg.script_bin.clone(),
                 PathBuf::from(SCRIPT_DIR),
@@ -197,7 +193,6 @@ impl Host {
             "computer_act" => self.cua.act(&self.browser, &call.agent_id, call.args).await,
             "computer_end" => self.cua.end(call.args).await.map(Output::text),
             t if t.starts_with("desk_") => self.desk.run(&self.cua, t, call.args).await,
-            t if t.starts_with("model_") => self.models.run(t, call.args).await.map(Output::text),
             "script_run" => {
                 self.scripts
                     .run(&self.cua, &self.workspace, call.args)
@@ -605,7 +600,6 @@ mod tests {
             automation: Automation::Desk,
             plugins: Vec::new(),
             adb_bin: "adb".into(),
-            gw_base_url: None,
             shuttle_socket: None,
         };
         let host = Host::new(&cfg);
@@ -723,7 +717,6 @@ mod tests {
             automation: Automation::Android,
             plugins: Vec::new(),
             adb_bin: adb,
-            gw_base_url: None,
             shuttle_socket: Some(desk),
         };
         tokio::spawn(run(cfg));
