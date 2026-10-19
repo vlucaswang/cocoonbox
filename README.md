@@ -32,7 +32,6 @@ model calls ──► gw (cocoonstack/gateway)
 | `agent/` | `cocoonbox-agent`, the in-box agent (Rust) |
 | `api/` | `cocoonbox-api`, control plane and edge (Go) |
 | `macos/` | `CocoonBox.app`, the `cocoonbox` CLI and its stdio MCP bridge (Swift) |
-| `deskhost/` | `cocoonbox-desk`, the desk host for Windows and macOS boxes (Rust) |
 | `image/` | guest image provisioning and the template cut |
 | `deploy/` | host, sandboxd instance and acceptance configuration |
 | `scripts/` | repository gates |
@@ -56,7 +55,7 @@ docker run --rm -v "$PWD":/w -w /w/agent -e CB_NO_BROWSER=1 rust:1.98.0 \
   sh -c 'cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked'
 ```
 
-The root `Package.swift` exports `CocoonBoxKit` and `CocoonBoxTerminal` for packages that build on them: `.package(url: "https://github.com/loomhand/cocoonbox.git", from: "<version>")`. Component details are in [agent/README.md](agent/README.md), [api/README.md](api/README.md), [macos/README.md](macos/README.md) and [deskhost/README.md](deskhost/README.md).
+The root `Package.swift` exports `CocoonBoxKit` and `CocoonBoxTerminal` for packages that build on them: `.package(url: "https://github.com/loomhand/cocoonbox.git", from: "<version>")`. Component details are in [agent/README.md](agent/README.md), [api/README.md](api/README.md) and [macos/README.md](macos/README.md).
 
 ## Run
 

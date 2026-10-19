@@ -1,4 +1,4 @@
-.PHONY: all api agent deskhost macos app image gate help
+.PHONY: all api agent macos app image gate help
 
 MACOS_TEST_ARGS ?=
 
@@ -9,9 +9,6 @@ api: ## api: fmt check, lint, test, build
 
 agent: ## agent: fmt check, clippy -D warnings, test (CB_NO_BROWSER=1 skips the Chrome tests)
 	cd agent && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked
-
-deskhost: ## deskhost: fmt check, clippy -D warnings, test (macOS or Windows)
-	cd deskhost && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked
 
 macos: ## macOS app: build the app and run the swift-testing suite
 	cd macos && bash -c 'source scripts/toolchain.sh && swift build --product CocoonBox' && scripts/test.sh $(MACOS_TEST_ARGS)

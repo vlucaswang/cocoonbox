@@ -80,7 +80,7 @@ exit($hits ? 1 : 0);
 
 deps() {
 	local bad=0
-	for lock in "$ROOT/agent/Cargo.lock" "$ROOT/deskhost/Cargo.lock"; do
+	for lock in "$ROOT/agent/Cargo.lock"; do
 		[ -r "$lock" ] || { echo "clean-gate deps: ${lock#"$ROOT"/} missing" >&2; bad=1; continue; }
 		if grep -n -E "^name = \"(enigo|$CG_RUNTIME[a-z_-]*)\"\$|^source = \"path\+" "$lock" | sed "s|^|${lock#"$ROOT"/}:|" | grep .; then bad=1; fi
 		if grep -n -E '^source = "git\+' "$lock" | grep -v -E '^[0-9]+:source = "git\+https://github\.com/loomhand/shuttle\?tag=v[0-9]+\.[0-9]+\.[0-9]+#[0-9a-f]{40}"$' | sed "s|^|${lock#"$ROOT"/}:|" | grep .; then bad=1; fi

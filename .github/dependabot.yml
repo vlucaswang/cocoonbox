@@ -13,9 +13,7 @@ updates:
     commit-message:
       prefix: "build"
   - package-ecosystem: cargo
-    directories:
-      - /agent
-      - /deskhost
+    directory: /agent
     schedule:
       interval: weekly
     commit-message:
