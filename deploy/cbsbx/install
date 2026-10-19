@@ -14,10 +14,11 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 
 (cd "$BIN_SRC" && sha256sum -c --quiet SHA256SUMS)
 install -d -m 0755 "$S" "$S/bin" "$S/cocoon" "$S/run" "$S/log" "$S/data" "$S/build"
+QUOTA_MOUNT=$(findmnt -n -o TARGET -T "$S")
 grep -q "^$QUOTA_ID:$S\$" /etc/projects 2>/dev/null || echo "$QUOTA_ID:$S" >> /etc/projects
 grep -q "^cbsbx:$QUOTA_ID\$" /etc/projid 2>/dev/null || echo "cbsbx:$QUOTA_ID" >> /etc/projid
-xfs_quota -x -c "project -s cbsbx" /srv/cb >/dev/null
-xfs_quota -x -c "limit -p bhard=$QUOTA cbsbx" /srv/cb
+xfs_quota -x -c "project -s cbsbx" "$QUOTA_MOUNT" >/dev/null
+xfs_quota -x -c "limit -p bhard=$QUOTA cbsbx" "$QUOTA_MOUNT"
 
 for b in sandboxd silkd cocoon cloud-hypervisor firecracker; do
 	[ -e "$S/bin/$b" ] && cp -p "$S/bin/$b" "$S/bin/$b.prev"

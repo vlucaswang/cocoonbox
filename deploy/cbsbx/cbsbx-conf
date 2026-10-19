@@ -17,6 +17,7 @@ GATEWAY = "10.203.0.1"
 GW_PORT = 18090
 CONNECT_PORT = 18091
 APT_PORT = 3142
+STATE_PORT = int(os.environ.get("CB_STATE_PORT", "19000"))
 RESIDENTIAL = "10.203.1.2"
 STORAGE = "40G"
 WARMUP = ("for i in $(seq 1 600); do systemctl -q is-active cocoonbox-xorg cocoonbox-session cocoonbox-toolhost cocoonbox-agent "
@@ -71,7 +72,7 @@ conf = {
     "max_claims": int(os.environ.get("CB_MAX_CLAIMS", "16")),
     "refill_concurrency": 1,
     "audit_log": True,
-    "egress_internal_allow": [f"{GATEWAY}/32:{GW_PORT},{CONNECT_PORT},{APT_PORT}"],
+    "egress_internal_allow": [f"{GATEWAY}/32:{GW_PORT},{CONNECT_PORT},{APT_PORT},{STATE_PORT}"],
     "egress_upstream": {"claim_env": "EGRESS_UPSTREAM", "allow": [f"{RESIDENTIAL}/32"]},
     "egress_classes": [{"name": "cbdesk", "egress": egress}],
     "secrets": [{"name": "GW_KEY", "header": "Authorization"}, {"name": "CB_CONNECT_KEY", "header": "Authorization"}],

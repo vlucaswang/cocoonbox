@@ -26,10 +26,11 @@ systemctl mask apt-cacher-ng.service
 grep -qx 'NO_CRON_RUN=1' /etc/default/apt-cacher-ng || echo 'NO_CRON_RUN=1' >> /etc/default/apt-cacher-ng
 
 install -d -o apt-cacher-ng -g apt-cacher-ng -m 0750 "$DIR"
+QUOTA_MOUNT=$(findmnt -n -o TARGET -T "$DIR")
 grep -q "^$QUOTA_ID:$DIR\$" /etc/projects 2>/dev/null || echo "$QUOTA_ID:$DIR" >> /etc/projects
 grep -q "^cbapt:$QUOTA_ID\$" /etc/projid 2>/dev/null || echo "cbapt:$QUOTA_ID" >> /etc/projid
-xfs_quota -x -c "project -s cbapt" /srv/cb >/dev/null
-xfs_quota -x -c "limit -p bhard=$QUOTA cbapt" /srv/cb
+xfs_quota -x -c "project -s cbapt" "$QUOTA_MOUNT" >/dev/null
+xfs_quota -x -c "limit -p bhard=$QUOTA cbapt" "$QUOTA_MOUNT"
 
 install -d -m 0755 "$CONF"
 install -m 0644 "$SRC/cb-apt-cache.conf" "$CONF/acng.conf"

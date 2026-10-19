@@ -10,6 +10,7 @@ BRIDGE_IP=${BRIDGE_ADDR%/*}
 GW_PORT=18090
 CONNECT_PORT=18091
 APT_PORT=3142
+STATE_PORT=${CB_STATE_PORT:-19000}
 RES_IF=cbres0
 RES_ADDR=10.203.1.2/32
 RES_PORT=8823
@@ -24,19 +25,19 @@ up() {
 	ip link set "$RES_IF" up
 
 	iptables -N CB-INPUT 2>/dev/null || iptables -F CB-INPUT
-	iptables -A CB-INPUT -i "$UPLINK" -p tcp -m multiport --dports $GW_PORT,$CONNECT_PORT,$APT_PORT,18200,18201 ! -s "$HOST_IP" -j DROP
+	iptables -A CB-INPUT -i "$UPLINK" -p tcp -m multiport --dports $GW_PORT,$CONNECT_PORT,$APT_PORT,$STATE_PORT,18200,18201 ! -s "$HOST_IP" -j DROP
 	iptables -A CB-INPUT -p tcp --dport $RES_PORT ! -i lo -j DROP
 	iptables -C INPUT -j CB-INPUT 2>/dev/null || iptables -I INPUT 1 -j CB-INPUT
 
 	ip6tables -N CB-INPUT 2>/dev/null || ip6tables -F CB-INPUT
-	ip6tables -A CB-INPUT -i "$UPLINK" -p tcp -m multiport --dports $GW_PORT,$CONNECT_PORT,$APT_PORT,18200,18201 -j DROP
+	ip6tables -A CB-INPUT -i "$UPLINK" -p tcp -m multiport --dports $GW_PORT,$CONNECT_PORT,$APT_PORT,$STATE_PORT,18200,18201 -j DROP
 	ip6tables -A CB-INPUT -p tcp --dport $RES_PORT ! -i lo -j DROP
 	ip6tables -C INPUT -j CB-INPUT 2>/dev/null || ip6tables -I INPUT 1 -j CB-INPUT
 
-	# host-originated traffic to the bridge gateway (the sandboxd egress proxy) reaches gw, the connect box door and the apt cache only
+	# Host-originated bridge traffic reaches only the explicitly exposed services.
 	iptables -N CB-OUTPUT 2>/dev/null || iptables -F CB-OUTPUT
 	iptables -A CB-OUTPUT -d "$BRIDGE_IP" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
-	iptables -A CB-OUTPUT -d "$BRIDGE_IP" -p tcp -m multiport --dports "$GW_PORT,$CONNECT_PORT,$APT_PORT" -j RETURN
+	iptables -A CB-OUTPUT -d "$BRIDGE_IP" -p tcp -m multiport --dports "$GW_PORT,$CONNECT_PORT,$APT_PORT,$STATE_PORT" -j RETURN
 	iptables -A CB-OUTPUT -d "$BRIDGE_IP" -p tcp -j REJECT --reject-with tcp-reset
 	iptables -A CB-OUTPUT -d "$BRIDGE_IP" -j REJECT
 	iptables -C OUTPUT -j CB-OUTPUT 2>/dev/null || iptables -I OUTPUT 1 -j CB-OUTPUT

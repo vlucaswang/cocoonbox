@@ -13,7 +13,7 @@ report() {
 for m in / /srv/cb; do
 	report "$m" "$(df --output=pcent "$m" | tail -1 | tr -dc 0-9)"
 done
-xfs_quota -x -c 'report -p -b -N' /srv/cb 2>/dev/null | while read -r name used _ hard _; do
+xfs_quota -x -c 'report -p -b -N' "$(findmnt -n -o TARGET -T /srv/cb)" 2>/dev/null | while read -r name used _ hard _; do
 	if [ "$hard" -gt 0 ] 2>/dev/null; then
 		report "project $name" $((used * 100 / hard))
 	fi

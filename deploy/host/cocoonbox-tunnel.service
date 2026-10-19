@@ -1,0 +1,24 @@
+[Unit]
+Description=Private OpenAI MCP tunnel for Cocoonbox
+Wants=network-online.target
+After=network-online.target cocoonbox-api.service
+ConditionFileNotEmpty=/etc/cocoonbox/tunnel-api-key
+
+[Service]
+Type=simple
+DynamicUser=yes
+LoadCredential=tunnel-api-key:/etc/cocoonbox/tunnel-api-key
+LoadCredential=cocoonbox-token:/etc/cocoonbox/isabel-api-token
+# Secret values stay out of the unit, command arguments, and profile.
+ExecStart=/bin/sh -c 'export COCOONBOX_MCP_AUTH="Bearer $$(cat "$$CREDENTIALS_DIRECTORY/cocoonbox-token")"; exec /usr/local/bin/tunnel-client run --config /etc/cocoonbox-tunnel.yaml --control-plane.api-key "file:$$CREDENTIALS_DIRECTORY/tunnel-api-key" --mcp.extra-headers "Authorization: env:COCOONBOX_MCP_AUTH"'
+Restart=on-failure
+RestartSec=10
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

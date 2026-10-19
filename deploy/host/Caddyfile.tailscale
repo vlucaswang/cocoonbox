@@ -1,0 +1,25 @@
+# Candidate loopback router for Tailscale Serve; not a standalone TLS endpoint.
+# Run Caddy from this directory, or install Caddyfile.cocoonbox beside this file.
+# After the backends are running and Caddy validates this configuration:
+#   tailscale serve --bg --https=443 http://127.0.0.1:18202
+# Public origin: https://<device's full Tailscale DNS name>
+# Use a separate HTTPS port if another service already owns port 443.
+{
+	admin 127.0.0.1:2019
+	auto_https off
+	# Tailscale Serve forwards native gRPC to this listener over h2c.
+	servers {
+		protocols h1 h2 h2c
+	}
+}
+
+http://:18202 {
+	bind 127.0.0.1
+	import Caddyfile.cocoonbox
+	handle {
+		respond 404
+	}
+}
+
+# Optional local S3 adapter; install only when a NAS upstream needs one.
+import Caddyfile.nas-s3*

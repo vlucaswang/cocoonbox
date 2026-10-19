@@ -1,6 +1,7 @@
 #!/bin/bash
 # Exports a stopped cbsbx cocoon VM as a flat rootfs tarball for `cocoon image import`; read-only on the VM's disks.
 # usage: sudo image/export-rootfs.sh <stopped vm> <silkd binary> <out tarball>
+# CB_MODEL_MAIN / CB_MODEL_COMPUTER override the exported image's model defaults.
 set -euo pipefail
 export LC_ALL=C
 
@@ -93,7 +94,7 @@ mount -o loop "$B/cow.raw" "$B/m/cow"
 mount -t overlay overlay -o ro,metacopy=on,redirect_dir=follow,lowerdir="$B/m/cow/upper:$lower" "$B/m/base"
 gid=$(awk -F: "\$1==\"cbagent\"{print \$3}" "$B/m/base/etc/group")
 [ -n "$gid" ] || { echo "no cbagent group in the image" >&2; exit 1; }
-printf "GW_BASE_URL=http://10.203.0.1:18090/v1\nGW_API_KEY=unprovisioned\nMODEL_MAIN=deepseek/deepseek-v4.1-flash\nMODEL_COMPUTER=anthropic/claude-sonnet-5\nAGENT_LISTEN=127.0.0.1:7443\nCONNECT_URL=http://10.203.0.1:18091/mcp\n" > "$B/add/etc/cocoonbox/agent.env"
+printf "GW_BASE_URL=http://10.203.0.1:18090/v1\nGW_API_KEY=unprovisioned\nMODEL_MAIN=%s\nMODEL_COMPUTER=%s\nAGENT_LISTEN=127.0.0.1:7443\nCONNECT_URL=http://10.203.0.1:18091/mcp\n" "${CB_MODEL_MAIN:-deepseek/deepseek-v4.1-flash}" "${CB_MODEL_COMPUTER:-anthropic/claude-sonnet-5}" > "$B/add/etc/cocoonbox/agent.env"
 chown 0:"$gid" "$B/add/etc/cocoonbox/agent.env"
 chmod 0640 "$B/add/etc/cocoonbox/agent.env"
 mount -t overlay overlay -o ro,metacopy=on,redirect_dir=follow,lowerdir="$B/add:$B/m/cow/upper:$lower" "$B/m/root"
