@@ -279,6 +279,8 @@ impl Harness {
             automation,
             plugins,
             routing_extra: cocoonbox_agent::config::routing_extra(&routing_dir),
+            shuttle_socket: None,
+            workspace: workspace.clone(),
             state_roots: vec![
                 Root {
                     name: "home".into(),

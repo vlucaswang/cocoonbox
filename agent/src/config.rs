@@ -93,6 +93,10 @@ pub struct ServeConfig {
     pub plugins: Vec<Plugin>,
     /// Paragraphs the image appends to the box agent's routing and, within their cap, to the MCP instructions.
     pub routing_extra: Vec<String>,
+    /// shuttle's desk endpoint, which takes the desk calls and runs straight from serve when set.
+    pub shuttle_socket: Option<PathBuf>,
+    /// The workspace that relative script paths of runs on shuttle start from.
+    pub workspace: PathBuf,
 }
 
 impl std::fmt::Debug for ServeConfig {
@@ -119,6 +123,8 @@ impl std::fmt::Debug for ServeConfig {
             .field("automation", &self.automation)
             .field("plugins", &self.plugins)
             .field("routing_extra", &self.routing_extra)
+            .field("shuttle_socket", &self.shuttle_socket)
+            .field("workspace", &self.workspace)
             .finish()
     }
 }
@@ -153,6 +159,8 @@ impl ServeConfig {
             automation: Automation::detect(),
             plugins: plugins::load(Path::new(&optional("TOOLS_DIR", TOOLS_DIR))),
             routing_extra: routing_extra(Path::new(&optional("ROUTING_DIR", ROUTING_DIR))),
+            shuttle_socket: shuttle_socket(),
+            workspace: optional("CB_WORKSPACE", DEFAULT_WORKSPACE).into(),
         })
     }
 }
@@ -213,9 +221,7 @@ impl ToolhostConfig {
                 .ok()
                 .filter(|v| !v.is_empty())
                 .or_else(|| env_file_value(Path::new(DESK_ENV), "GW_BASE_URL")),
-            shuttle_socket: env::var_os("SHUTTLE_SOCKET")
-                .filter(|v| !v.is_empty())
-                .map(PathBuf::from),
+            shuttle_socket: shuttle_socket(),
         })
     }
 }
@@ -263,6 +269,13 @@ fn optional(key: &str, default: &str) -> String {
         .unwrap_or_else(|| default.to_owned())
 }
 
+/// shuttle's desk endpoint from `SHUTTLE_SOCKET`; none when unset.
+fn shuttle_socket() -> Option<PathBuf> {
+    env::var_os("SHUTTLE_SOCKET")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,6 +304,8 @@ mod tests {
             automation: Automation::Plain,
             plugins: Vec::new(),
             routing_extra: Vec::new(),
+            shuttle_socket: None,
+            workspace: "/w".into(),
         };
         let shown = format!("{cfg:?}");
         assert!(!shown.contains("sk-secret-key"), "{shown}");

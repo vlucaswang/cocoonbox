@@ -198,7 +198,7 @@ async fn run_report(
     match script {
         Script::Code(code) => args["code"] = code.into(),
         Script::File(path) => {
-            if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
+            if let Ok(false) = tokio::fs::try_exists(&path).await {
                 return Err(format!("script {} does not exist", path.display()));
             }
             args["script"] = path.display().to_string().into();

@@ -11,7 +11,7 @@ use crate::flows::{self, Syncer};
 use crate::journal::Journal;
 use crate::pb::{self, Role, event, transcript_entry::Body};
 use crate::secrets::SECRETS;
-use crate::toolhost::rpc::{self, Call};
+use crate::toolhost::rpc::{self, Call, Output};
 
 const DRIVER_TOOLS: [&str; 3] = ["computer_state", "computer_act", "screenshot"];
 
@@ -31,23 +31,7 @@ impl Tools for rpc::Client {
             tool: name.to_owned(),
             args,
         };
-        match self.call(&call).await {
-            Ok(mut out) => {
-                for (field, value) in &out.secrets {
-                    SECRETS.register(field, value);
-                }
-                SECRETS.scrub(&mut out.text);
-                ToolOutput {
-                    image: out
-                        .image_b64
-                        .and_then(|b| B64.decode(b).ok())
-                        .map(Bytes::from),
-                    text: out.text,
-                    is_error: out.is_error,
-                }
-            }
-            Err(e) => ToolOutput::error(e),
-        }
+        tool_output(self.call(&call).await)
     }
 }
 
@@ -279,6 +263,27 @@ impl Dispatcher {
                 y: coord("y"),
                 text,
             }));
+    }
+}
+
+/// The transcript form of a tool host's answer: card fields it typed are registered, and scrubbed from its text.
+pub fn tool_output(answer: Result<Output, String>) -> ToolOutput {
+    match answer {
+        Ok(mut out) => {
+            for (field, value) in &out.secrets {
+                SECRETS.register(field, value);
+            }
+            SECRETS.scrub(&mut out.text);
+            ToolOutput {
+                image: out
+                    .image_b64
+                    .and_then(|b| B64.decode(b).ok())
+                    .map(Bytes::from),
+                text: out.text,
+                is_error: out.is_error,
+            }
+        }
+        Err(e) => ToolOutput::error(e),
     }
 }
 

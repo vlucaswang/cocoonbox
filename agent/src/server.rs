@@ -15,6 +15,7 @@ use tonic::transport::server::TcpIncoming;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::config::{Automation, ServeConfig};
+use crate::dispatch::Tools;
 use crate::exec;
 use crate::identity::{CREDENTIAL_HEADER, Denied, Gate, Principal};
 use crate::llm;
@@ -26,6 +27,7 @@ use crate::pb::state_server::{State, StateServer};
 use crate::pb::{self, Event, fill_credential_request::Secret};
 use crate::runner::Runtime;
 use crate::screen;
+use crate::shuttle::Split;
 use crate::state::{Pause, StateEngine, StateError};
 use crate::toolhost::rpc::{self, Call};
 
@@ -431,7 +433,16 @@ pub async fn serve(cfg: ServeConfig) -> Result<(), String> {
         &cfg.gw_api_key,
         cfg.anthropic_messages,
     )?);
-    let tools = Arc::new(rpc::Client::new(cfg.toolhost_socket.clone()));
+    let toolhost = rpc::Client::new(cfg.toolhost_socket.clone());
+    let tools: Arc<dyn Tools> = match &cfg.shuttle_socket {
+        Some(shuttle) => Arc::new(Split::new(
+            rpc::Client::new(shuttle.clone()),
+            toolhost,
+            cfg.workspace.clone(),
+            cfg.plugins.iter().map(|p| p.name.clone()).collect(),
+        )),
+        None => Arc::new(toolhost),
+    };
     let rt = Runtime::open(cfg, model, tools).await?;
     let stop = rt.stop.clone();
     // detached: turns the first SIGTERM or SIGINT into a shutdown

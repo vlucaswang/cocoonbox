@@ -83,6 +83,9 @@ plugins = "/etc/cocoonbox/tools.d"
 
 [driver]
 overlay = false
+
+[daemon]
+socket_group = "cbagent"
 EOF
 	chmod 0644 "$SHUTTLE_CONFIG.tmp"
 	mv -f "$SHUTTLE_CONFIG.tmp" "$SHUTTLE_CONFIG"
@@ -127,13 +130,13 @@ check() {
 	[ "$(systemctl --user -M user@ is-enabled cua-driver.service 2>/dev/null)" = masked ]
 	[ ! -e /etc/xdg/autostart/cocoonbox-cua-driver.desktop ]
 	for _ in $(seq 60); do [ -S /run/cocoonbox/desk.sock ] && [ -S /run/cocoonbox/driver.sock ] && break; sleep 0.5; done
-	[ "$(stat -c %a /run/cocoonbox/desk.sock)" = 600 ]
+	[ "$(stat -c %a:%G /run/cocoonbox/desk.sock)" = 660:cbagent ]
 	[ "$(pgrep -u user -x cua-driver | wc -l)" = 1 ]
 	tr '\0' '\n' <"/proc/$(pgrep -u user -x cua-driver)/cmdline" | grep -qx -- --no-overlay
 	[ "$(readlink -f /home/user/.config/cocoon-shuttle/flows)" = /workspace/flows ]
 	[ "$(stat -c %a /home/user/.config/cocoon-shuttle/config.toml)" = 600 ]
 	grep -qx 'plugins = "/etc/cocoonbox/tools.d"' /home/user/.config/cocoon-shuttle/config.toml
-	systemctl show -p Environment cocoonbox-toolhost | grep -q 'SHUTTLE_SOCKET=/run/cocoonbox/desk.sock'
+	for u in cocoonbox-toolhost cocoonbox-agent; do systemctl show -p Environment "$u" | grep -q 'SHUTTLE_SOCKET=/run/cocoonbox/desk.sock'; done
 	for u in cocoonbox-toolhost cocoonbox-session; do systemctl show -p Environment "$u" | grep -q 'TOOLHOST_SOCKET=/run/cocoonbox/toolhost.sock'; done
 	systemctl --user -M user@ show-environment | grep -qx 'TOOLHOST_SOCKET=/run/cocoonbox/toolhost.sock'
 	grep -qxF '## Pick the tool tier first' "$ROOT/AGENTS.md"

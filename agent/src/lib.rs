@@ -24,6 +24,7 @@ pub mod runs;
 pub mod screen;
 pub mod secrets;
 pub mod server;
+pub mod shuttle;
 pub mod state;
 pub mod store;
 pub mod sys;

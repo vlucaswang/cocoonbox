@@ -111,7 +111,7 @@ Optional overrides with contract defaults, used by tests and non-standard layout
 | `CHROME_BIN` | `google-chrome` |
 | `CHROME_PROFILE` | `~/.config/cocoonbox-chrome` |
 | `CUA_DRIVER_SOCKET` | `~/.cache/cua-driver/cua-driver.sock` |
-| `SHUTTLE_SOCKET` | unset; when set, shuttle's desk endpoint, which answers the toolhost's desk verbs, model calls and runs |
+| `SHUTTLE_SOCKET` | unset; when set, shuttle's desk endpoint: the toolhost relays its desk verbs, model calls and runs there, and serve, when its own environment sets it, sends its desk calls and runs there itself |
 | `GW_ANTHROPIC_WIRE` | `chat` (`messages` switches `anthropic/` models to `/v1/messages`) |
 
 ## Build

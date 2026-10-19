@@ -37,6 +37,7 @@ use tokio::sync::{Mutex, watch};
 use x11rb::connection::Connection as _;
 
 use crate::config::{Automation, ToolhostConfig};
+use crate::runs::Shots;
 use android::Android;
 use browser::Browser;
 use cua::Cua;
@@ -208,6 +209,7 @@ impl Host {
                     .await
             }
             "gui_flows" => Ok(Output::text(Scripts::flows(&self.workspace).await)),
+            "run_screenshot" => self.run_screenshot(&call.args).await,
             "desk" => {
                 let op = call.args["op"].as_str().unwrap_or_default().to_owned();
                 self.desk
@@ -276,16 +278,29 @@ impl Host {
         })
     }
 
+    /// A screenshot for a run on shuttle that serve shapes: the image, and with `keep` the path of its kept file as the text.
+    async fn run_screenshot(&self, args: &Value) -> Result<Output, String> {
+        let max_edge = args["max_edge"]
+            .as_u64()
+            .and_then(|e| u32::try_from(e).ok());
+        let keep = args["keep"].as_bool().unwrap_or(false);
+        let shot = self.scripts.kept(&self.cua).shot(max_edge, keep).await?;
+        Ok(shot.map_or_else(Output::default, |s| Output {
+            text: s.path.map(|p| p.display().to_string()).unwrap_or_default(),
+            image_b64: Some(s.image_b64),
+            ..Output::default()
+        }))
+    }
+
     /// Sends a desk verb or model call as it came to shuttle, on a box that runs it; every other call comes back.
     async fn relay(&self, mut call: Call) -> Result<Output, Call> {
         let Some(shuttle) = &self.shuttle else {
             return Err(call);
         };
-        if call.tool == "desk" {
-            call.tool = format!("desk_{}", call.args["op"].as_str().unwrap_or_default());
-        }
-        if !(call.tool.starts_with("desk_") || call.tool.starts_with("model_")) {
-            return Err(call);
+        match crate::shuttle::desk_verb(&call.tool, &call.args) {
+            Some(verb) => call.tool = verb,
+            None if call.tool.starts_with("model_") => {}
+            None => return Err(call),
         }
         Ok(shuttle
             .desk(&call, rpc::DESK_DEADLINE)
