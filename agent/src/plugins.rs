@@ -58,8 +58,9 @@ impl Plugin {
     }
 }
 
-/// Reads the `*.json` plugins in `dir` in file-name order; a missing directory has none, and a file
-/// that breaks a rule or repeats a name is skipped with one log line.
+/// Reads the `*.json` plugins in `dir` in file-name order; a missing directory has none, a service
+/// spec, which shuttle runs, is no script tool, and a file that breaks a rule or repeats a name is
+/// skipped with one log line.
 pub fn load(dir: &Path) -> Vec<Plugin> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -72,8 +73,14 @@ pub fn load(dir: &Path) -> Vec<Plugin> {
     files.sort();
     let mut plugins: Vec<Plugin> = Vec::new();
     for file in files {
-        let plugin = std::fs::read(&file)
-            .map_err(|e| e.to_string())
+        let raw = std::fs::read(&file).map_err(|e| e.to_string());
+        if raw.as_ref().is_ok_and(|raw| {
+            serde_json::from_slice::<serde_json::Value>(raw)
+                .is_ok_and(|v| v.get("service").is_some())
+        }) {
+            continue;
+        }
+        let plugin = raw
             .and_then(|raw| serde_json::from_slice::<Plugin>(&raw).map_err(|e| e.to_string()))
             .and_then(|p| p.check().map(|()| p))
             .and_then(|p| {
@@ -142,6 +149,11 @@ mod tests {
             ),
         );
         write(d, "35-broken.json", "{");
+        write(
+            d,
+            "36-service.json",
+            r#"{"service": "cocoonbox", "bin": "/usr/local/bin/cocoonbox-agent", "args": ["toolhost"], "tools": []}"#,
+        );
         write(
             d,
             "40-c.txt",

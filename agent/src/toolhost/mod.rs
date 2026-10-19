@@ -233,7 +233,7 @@ impl Host {
             "flows_wait" => flows::wait(&self.flow_writes, call.args)
                 .await
                 .map(Output::text),
-            "screenshot" => self.cua.look(&call.args).await,
+            "screenshot" | "computer_screenshot" => self.cua.look(&call.args).await,
             other => match self.plugins.get(other) {
                 Some(bin) => {
                     self.scripts

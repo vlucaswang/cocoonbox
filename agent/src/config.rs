@@ -195,9 +195,20 @@ impl ToolhostConfig {
     /// Reads toolhost settings; every key has a contract default.
     pub fn from_env() -> Result<Self, String> {
         let home = env::var("HOME").map_err(|e| format!("read HOME: {e}"))?;
+        let endpoint = PathBuf::from(optional("TOOLHOST_SOCKET", DEFAULT_TOOLHOST_SOCKET));
+        let service = env::var_os("SHUTTLE_SERVICE_SOCKET")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from);
         Ok(Self {
-            socket: optional("TOOLHOST_SOCKET", DEFAULT_TOOLHOST_SOCKET).into(),
-            socket_group: optional("TOOLHOST_SOCKET_GROUP", "cbagent"),
+            socket_group: match service {
+                Some(_) => String::new(),
+                None => optional("TOOLHOST_SOCKET_GROUP", "cbagent"),
+            },
+            shuttle_socket: match service {
+                Some(_) => Some(endpoint.clone()),
+                None => shuttle_socket(),
+            },
+            socket: service.unwrap_or(endpoint),
             workspace: optional("CB_WORKSPACE", DEFAULT_WORKSPACE).into(),
             chrome_bin: optional("CHROME_BIN", "google-chrome"),
             chrome_profile: env::var("CHROME_PROFILE").map_or_else(
@@ -221,7 +232,6 @@ impl ToolhostConfig {
                 .ok()
                 .filter(|v| !v.is_empty())
                 .or_else(|| env_file_value(Path::new(DESK_ENV), "GW_BASE_URL")),
-            shuttle_socket: shuttle_socket(),
         })
     }
 }

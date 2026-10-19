@@ -57,6 +57,14 @@ impl Tools for Split {
                         .unwrap_or_else(Output::error),
                 )
             }
+            "screenshot" => return self.toolhost.run(owner, "computer_screenshot", args).await,
+            "gui_plan" => {
+                let mut out = self.toolhost.run(owner, "gui_flows", json!({})).await;
+                if !out.is_error && out.text.trim().is_empty() {
+                    "no saved flows yet".clone_into(&mut out.text);
+                }
+                return out;
+            }
             _ => return self.toolhost.run(owner, name, args).await,
         };
         tool_output(answer)
@@ -170,13 +178,18 @@ mod tests {
             ("run_screenshot", &json!(true))
         );
 
-        for (name, args) in [
-            ("read_file", json!({"path": "a"})),
-            ("gui_plan", json!({"flows": true})),
+        for (name, args, sent) in [
+            ("read_file", json!({"path": "a"}), "read_file"),
+            ("gui_plan", json!({"flows": true}), "gui_flows"),
+            (
+                "screenshot",
+                json!({"max_edge": 512}),
+                "computer_screenshot",
+            ),
         ] {
             let out = split.run("ag", name, args).await;
             assert_eq!(out.text, "from the toolhost");
-            assert_eq!(toolhost.recv().await.unwrap().tool, name);
+            assert_eq!(toolhost.recv().await.unwrap().tool, sent);
         }
     }
 }
