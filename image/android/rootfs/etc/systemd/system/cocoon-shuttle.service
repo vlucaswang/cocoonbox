@@ -1,0 +1,20 @@
+[Unit]
+Description=cocoon-shuttle desk daemon on the box's Android device
+After=cocoonbox-redroid.service
+ConditionPathExists=/usr/local/bin/cocoon-shuttle
+
+[Service]
+Type=simple
+User=user
+Group=user
+WorkingDirectory=/workspace
+Environment=HOME=/home/user
+Environment=LANG=en_US.UTF-8
+ExecStartPre=/usr/local/lib/cocoonbox/shuttle-config
+ExecStart=/usr/local/bin/cocoon-shuttle serve /run/cocoonbox/desk.sock
+Restart=always
+RestartSec=2s
+OOMScoreAdjust=-900
+
+[Install]
+WantedBy=multi-user.target

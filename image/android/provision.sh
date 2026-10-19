@@ -1,5 +1,5 @@
 #!/bin/bash
-# Provisions the Android box base (Ubuntu 24.04, docker, scrcpy-rfb, ashmem, the UI server, the desk runtime) as root.
+# Provisions the Android box base (Ubuntu 24.04, docker, scrcpy-rfb, ashmem, the UI server, shuttle and its desk runtime) as root.
 # Runs from a copy of image/android in the base build (base/Dockerfile), after /var/lib/docker holds the baked container.
 set -euo pipefail
 
@@ -138,12 +138,41 @@ setup_desk() {
 	. "$DESK/../shuttle.sh"
 	tmp=$(mktemp -d)
 	curl -fsSL "$SHUTTLE_URL" -o "$tmp/$SHUTTLE_TARBALL"
+	install_shuttle "$tmp/$SHUTTLE_TARBALL"
 	install_shuttle_runtime "$tmp/$SHUTTLE_TARBALL"
 	rm -rf "$tmp"
 	install -D -m 0755 "$DESK/usr/local/bin/desk" /usr/local/bin/desk
+	install -D -m 0755 "$DESK/usr/local/lib/cocoonbox/shuttle-config" /usr/local/lib/cocoonbox/shuttle-config
 	install -d /etc/cocoonbox
 	printf 'GW_BASE_URL=%s\n' "$GW_BASE_URL" > /etc/cocoonbox/desk.env
 	chmod 0644 /etc/cocoonbox/desk.env
+	write_shuttle_config
+}
+
+# shuttle's box config: models through gw, no local controls, and its adb backend on the box's redroid with shuttle's UI server
+write_shuttle_config() {
+	cat >/etc/cocoonbox/shuttle.toml.tmp <<EOF
+base_url = "$GW_BASE_URL"
+decisions_url = "$GW_BASE_URL/decisions"
+api_key = "unprovisioned"
+decide_build = "typesafe/jev-1.14-########"
+
+[safety]
+indicator = false
+confirm = "off"
+kill_hotkey = "off"
+
+[tools]
+script_run = true
+
+[android]
+serial = "127.0.0.1:5555"
+ui_jar = "/opt/cocoon-shuttle/$SHUTTLE_VERSION/android/cb-ui.jar"
+scrcpy_jar = "/usr/local/share/scrcpy/scrcpy-server.jar"
+su = "/usr/local/share/scrcpy/su1000"
+EOF
+	chmod 0644 /etc/cocoonbox/shuttle.toml.tmp
+	mv -f /etc/cocoonbox/shuttle.toml.tmp /etc/cocoonbox/shuttle.toml
 }
 
 setup_cocoonbox_dirs() {
@@ -163,7 +192,7 @@ enable_units() {
 	systemctl disable docker.service docker.socket containerd.service >/dev/null 2>&1
 	systemctl is-active -q docker.service && { echo "docker is running in the template" >&2; exit 1; }
 	systemctl mask dnscrypt-proxy.socket dnscrypt-proxy.service dnscrypt-proxy-resolvconf.service redsocks.service >/dev/null 2>&1
-	systemctl enable cocoonbox-android.path cocoonbox-android-proxy.socket cocoonbox-session.service >/dev/null
+	systemctl enable cocoonbox-android.path cocoonbox-android-proxy.socket cocoonbox-session.service cocoon-shuttle.service >/dev/null
 }
 
 setup_packages

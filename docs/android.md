@@ -10,6 +10,7 @@ An Android box is a template of family `cbdroid`: an Ubuntu 24.04 VM that runs A
 | ashmem for the 24.04 kernel, which Android's gralloc needs | `image/android/ashmem/` (GPL-2.0, built in the base) |
 | the UI server: the accessibility tree from a resident `app_process`, built in the base | `image/android/ui/` |
 | Node and the desk runtime of cbcore, for GUI plans and scripts | `image/android/provision.sh` (`setup_desk`) |
+| shuttle, the box's desk: the pinned archive in `/opt/cocoon-shuttle`, its box config `/etc/cocoonbox/shuttle.toml` with an `[android]` section, and `cocoon-shuttle.service` as `user` on `/run/cocoonbox/desk.sock` | `image/desk/shuttle.sh`, `image/android/provision.sh` (`setup_desk`), `image/android/rootfs/` |
 | cut, from the base and a release's agent | `image/android/cut.sh` |
 
 The base is `ghcr.io/loomhand/cocoonbox/android-base`, built by `.github/workflows/android-base.yml` from `image/android/base/`: `bake.sh` bakes a created container of AOSP redroid 16 (`redroid.Dockerfile`, no Google apps) into docker data, and `Dockerfile` provisions cocoon's Ubuntu 24.04 image with it. A template is the base plus a release's agent:
@@ -35,7 +36,7 @@ The box has no NIC. Android on the docker bridge (pinned to `172.18.0.1/16`) rea
 
 The toolhost answers these tools in one of two modes:
 - **Without `SHUTTLE_SOCKET`**, it answers them itself, with its own adb calls, UI server and paste server, as the table below says.
-- **With `SHUTTLE_SOCKET`** (an image that runs `cocoon-shuttle serve` on its adb backend), it relays them to shuttle: `screenshot` as `desk_look`, `computer_*` as `desk_computer_*`, and `desk_*` as they are, each within the desk deadline. `script_run` and `gui_plan` run on shuttle's runner, and their screenshots come from `desk_look` too. The toolhost then runs no adb for these tools: shuttle owns the device's UI server and its paste session. Shuttle mode needs a shuttle that serves `desk_computer_end`: loomhand/shuttle#65 or newer, v0.1.4 and later once tagged; the Android image pins one.
+- **With `SHUTTLE_SOCKET`** (an image that runs `cocoon-shuttle serve` on its adb backend), it relays them to shuttle: `screenshot` as `desk_look`, `computer_*` as `desk_computer_*`, and `desk_*` as they are, each within the desk deadline. `script_run` and `gui_plan` run on shuttle's runner, and their screenshots come from `desk_look` too. The toolhost then runs no adb for these tools: shuttle owns the device's UI server and its paste session. Shuttle mode needs a shuttle that serves `desk_computer_end`, v0.1.5 or later. The Android image runs in shuttle mode: it pins v0.1.5, whose UI server is the archive's `android/cb-ui.jar`, and the toolhost's own Android desk stays in the image unused until M7.
 
 | Tool | On Android |
 |---|---|

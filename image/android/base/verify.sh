@@ -14,6 +14,11 @@ grep -qx 'wait -n "$server_pid" "$rfb_pid"' /usr/local/lib/cocoonbox/remoteview
 command -v adb dnscrypt-proxy redsocks mkfs.btrfs node git >/dev/null
 for f in desk gui_plan png; do test -s /opt/desk/lib/$f.mts; done
 grep -qx 'Environment=TOOLHOST_SOCKET=/run/cocoonbox/toolhost.sock' /etc/systemd/system/cocoonbox-toolhost.service
+grep -qx 'Environment=SHUTTLE_SOCKET=/run/cocoonbox/desk.sock' /etc/systemd/system/cocoonbox-toolhost.service
+shuttle=$(dirname "$(readlink -f /usr/local/bin/cocoon-shuttle)")
+test -x "$shuttle/node" && test -s "$shuttle/runtime/gui_plan.mts"
+grep -Fqx "ui_jar = \"$shuttle/android/cb-ui.jar\"" /etc/cocoonbox/shuttle.toml
+test -s "$shuttle/android/cb-ui.jar"
 test -f /opt/android/AGENTS.md
 test -d /var/lib/redroid-data && test -z "$(ls -A /var/lib/redroid-data)"
 cfgs=(/var/lib/docker/containers/*/config.v2.json)
@@ -22,6 +27,6 @@ grep -Fq '"Name":"/redroid"' "${cfgs[0]}"
 grep -Fq '"androidboot.use_memfd=0"' "${cfgs[0]}"
 grep -Fq '"5555/tcp":[{"HostIp":"127.0.0.1"' "$(dirname "${cfgs[0]}")/hostconfig.json"
 [ -z "$(find /var/lib/docker/vfs/dir -maxdepth 5 -path '*/priv-app/PrebuiltGmsCore' -print -quit)" ]
-for u in cocoonbox-android.path cocoonbox-android-proxy.socket cocoonbox-session.service; do systemctl is-enabled -q "$u"; done
+for u in cocoonbox-android.path cocoonbox-android-proxy.socket cocoonbox-session.service cocoon-shuttle.service; do systemctl is-enabled -q "$u"; done
 systemctl is-enabled -q docker.service && exit 1
 echo android-base-verify=ok
