@@ -167,9 +167,9 @@ mod tests {
     }
 
     #[test]
-    fn the_toolhost_service_spec_serves_every_toolhost_tool_serve_sends_on_a_desk_box() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../image/desk/rootfs/etc/cocoonbox/tools.d/cocoonbox.json");
+    fn the_toolhost_service_spec_lists_every_toolhost_tool_serve_sends_and_none_on_mcp() {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../image/desk/service/cocoonbox.json");
         let spec: serde_json::Value =
             serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         let names: Vec<&str> = spec["tools"]
@@ -227,9 +227,7 @@ mod tests {
             assert!(names.contains(&n.as_str()), "the spec lacks {n}");
         }
         for t in spec["tools"].as_array().unwrap() {
-            let streamed =
-                ["exec", "state_read", "state_write"].contains(&t["name"].as_str().unwrap());
-            assert_eq!(t["mcp"] == false, streamed, "{t}");
+            assert_eq!(t["mcp"], false, "serve is the box's only MCP front: {t}");
         }
     }
 

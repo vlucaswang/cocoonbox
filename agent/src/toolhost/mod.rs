@@ -459,10 +459,16 @@ async fn serve_conn(host: Arc<Host>, stream: UnixStream) {
     }
 }
 
-/// Binds a unix socket at `path`, mode 0660, owned by `group` when it exists.
+/// Binds a unix socket at `path`, mode 0660, owned by `group` when it exists; a socket another process still serves there stays.
 pub(crate) fn bind(path: &Path, group: &str) -> Result<UnixListener, String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    if std::os::unix::net::UnixStream::connect(path).is_ok() {
+        return Err(format!(
+            "{} answers: another process serves it",
+            path.display()
+        ));
     }
     let _ = std::fs::remove_file(path);
     let listener = UnixListener::bind(path).map_err(|e| format!("bind {}: {e}", path.display()))?;
@@ -564,6 +570,63 @@ fn shuttle_tool(tool: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn bind_keeps_a_socket_another_process_serves_and_replaces_a_stale_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("desk.sock");
+        let live = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let err = bind(&path, "").unwrap_err();
+        assert!(err.ends_with("another process serves it"), "{err}");
+        drop(live);
+        bind(&path, "").unwrap();
+    }
+
+    #[tokio::test]
+    async fn every_tool_of_the_shuttle_service_spec_is_one_the_toolhost_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = ToolhostConfig {
+            socket: dir.path().join("toolhost.sock"),
+            socket_group: String::new(),
+            workspace: dir.path().into(),
+            chrome_bin: "false".into(),
+            chrome_profile: dir.path().join("chrome"),
+            cdp_port: 1,
+            cua_socket: dir.path().join("cua.sock"),
+            script_bin: "false".into(),
+            session_save: "false".into(),
+            home: dir.path().into(),
+            automation: Automation::Desk,
+            plugins: Vec::new(),
+            adb_bin: "adb".into(),
+            gw_base_url: None,
+            shuttle_socket: None,
+        };
+        let host = Host::new(&cfg);
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../image/desk/service/cocoonbox.json");
+        let spec: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        for t in spec["tools"].as_array().unwrap() {
+            let tool = t["name"].as_str().unwrap();
+            if ["exec", "state_read", "state_write"].contains(&tool) {
+                continue;
+            }
+            let call = Call {
+                agent_id: "t".into(),
+                tool: tool.into(),
+                args: json!({}),
+            };
+            if let Ok(out) = tokio::time::timeout(Duration::from_secs(2), host.dispatch(call)).await
+            {
+                assert!(
+                    !out.text.starts_with("unknown tool ")
+                        && !out.text.starts_with("unknown browser tool "),
+                    "{tool}: {}",
+                    out.text
+                );
+            }
+        }
+    }
 
     #[test]
     fn the_os_is_its_name_and_version_and_the_desktop_its_last_name() {
