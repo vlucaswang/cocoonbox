@@ -18,6 +18,7 @@ COPY --from=ui /cb-ui.jar /tmp/cb-image/android/ui/cb-ui.jar
 COPY android/base/verify.sh /tmp/cb-image/android/base/verify.sh
 COPY desk/shuttle.sh /tmp/cb-image/desk/shuttle.sh
 COPY desk/rootfs/usr/local/bin/desk /tmp/cb-image/desk/rootfs/usr/local/bin/desk
+COPY desk/rootfs/usr/local/lib/cocoonbox/shuttle-config /tmp/cb-image/desk/rootfs/usr/local/lib/cocoonbox/shuttle-config
 RUN bash /tmp/cb-image/android/provision.sh && \
     bash /tmp/cb-image/android/base/verify.sh && \
     rm -rf /tmp/cb-image /var/lib/apt/lists/* && \
