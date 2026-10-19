@@ -41,7 +41,7 @@ tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 tonic = { version = "0.14", default-features = false, features = ["transport", "router", "codegen"] }
 tonic-prost = "0.14"
 uuid = { version = "1", features = ["v4"] }
-x11rb = { version = "0.14", features = ["shm", "shape", "xinput", "xtest"] }
+x11rb = { version = "0.14", features = ["shm", "shape", "xinput"] }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 zeroize = "1"
 zstd = { version = "0.14", default-features = false }

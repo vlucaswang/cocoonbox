@@ -2,7 +2,6 @@
 
 mod android;
 mod android_desk;
-mod atspi;
 mod browser;
 mod cua;
 pub mod desk;
@@ -18,7 +17,6 @@ pub mod state;
 mod timing;
 mod volatile;
 mod xshm;
-mod xtest;
 
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
@@ -192,7 +190,6 @@ impl Host {
             }
             "computer_act" => self.cua.act(&self.browser, &call.agent_id, call.args).await,
             "computer_end" => self.cua.end(call.args).await.map(Output::text),
-            t if t.starts_with("desk_") => self.desk.run(&self.cua, t, call.args).await,
             "script_run" => {
                 self.scripts
                     .run(&self.cua, &self.workspace, call.args)
@@ -205,12 +202,6 @@ impl Host {
             }
             "gui_flows" => Ok(Output::text(Scripts::flows(&self.workspace).await)),
             "run_screenshot" => self.run_screenshot(&call.args).await,
-            "desk" => {
-                let op = call.args["op"].as_str().unwrap_or_default().to_owned();
-                self.desk
-                    .run(&self.cua, &format!("desk_{op}"), call.args)
-                    .await
-            }
             "flows_scan" => flows::scan(&self.workspace).await.map(Output::text),
             "flows_read" => flows::read(&self.workspace, call.args)
                 .await
