@@ -167,6 +167,73 @@ mod tests {
     }
 
     #[test]
+    fn the_toolhost_service_spec_serves_every_toolhost_tool_serve_sends_on_a_desk_box() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../image/desk/rootfs/etc/cocoonbox/tools.d/cocoonbox.json");
+        let spec: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let names: Vec<&str> = spec["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        for n in &names {
+            assert!(
+                !n.ends_with("_run")
+                    && !["desk_", "model_", "safety_"]
+                        .iter()
+                        .any(|p| n.starts_with(p))
+                    && !["gui_plan", "script_run", "desk", "screenshot", "status"].contains(n),
+                "{n} collides with shuttle"
+            );
+        }
+        let shuttle = ["desk", "gui_plan", "script_run", "screenshot"];
+        let sent = tools::remote_tools(Automation::Desk)
+            .into_iter()
+            .chain(tools::computer_tools(Automation::Desk))
+            .map(|t| t.name.into_owned())
+            .filter(|n| !shuttle.contains(&n.as_str()));
+        let internal = [
+            "computer_screenshot",
+            "computer_end",
+            "gui_flows",
+            "run_screenshot",
+            "shell_close",
+            "upload",
+            "browser_end",
+            "browser_close",
+            "browser_start",
+            "active_origin",
+            "credential_fill",
+            "desktop_save",
+            "desktop_info",
+            "state_walk",
+            "state_apply",
+            "state_swap",
+            "state_place",
+            "state_read",
+            "state_write",
+            "exec",
+            "flows_scan",
+            "flows_read",
+            "flows_write",
+            "flows_remove",
+            "flows_mark",
+            "flows_index",
+            "flows_wait",
+        ];
+        for n in sent.chain(internal.map(str::to_owned)) {
+            assert!(names.contains(&n.as_str()), "the spec lacks {n}");
+        }
+        for t in spec["tools"].as_array().unwrap() {
+            let streamed =
+                ["exec", "state_read", "state_write"].contains(&t["name"].as_str().unwrap());
+            assert_eq!(t["mcp"] == false, streamed, "{t}");
+        }
+    }
+
+    #[test]
     fn a_missing_directory_has_no_plugins() {
         assert!(load(Path::new("/nonexistent/tools.d")).is_empty());
     }

@@ -139,9 +139,11 @@ check() {
 	[ "$(readlink -f /home/user/.config/cocoon-shuttle/flows)" = /workspace/flows ]
 	[ "$(stat -c %a /home/user/.config/cocoon-shuttle/config.toml)" = 600 ]
 	grep -qx 'plugins = "/etc/cocoonbox/tools.d"' /home/user/.config/cocoon-shuttle/config.toml
-	for u in cocoonbox-toolhost cocoonbox-agent; do systemctl show -p Environment "$u" | grep -q 'SHUTTLE_SOCKET=/run/cocoonbox/desk.sock'; done
-	for u in cocoonbox-toolhost cocoonbox-session; do systemctl show -p Environment "$u" | grep -q 'TOOLHOST_SOCKET=/run/cocoonbox/toolhost.sock'; done
-	systemctl --user -M user@ show-environment | grep -qx 'TOOLHOST_SOCKET=/run/cocoonbox/toolhost.sock'
+	systemctl show -p Environment cocoonbox-agent | grep 'SHUTTLE_SOCKET=/run/cocoonbox/desk.sock' | grep -q 'TOOLHOST_SOCKET=/run/cocoonbox/desk.sock'
+	systemctl show -p Environment cocoonbox-session | grep -q 'TOOLHOST_SOCKET=/run/cocoonbox/desk.sock'
+	systemctl --user -M user@ show-environment | grep -qx 'TOOLHOST_SOCKET=/run/cocoonbox/desk.sock'
+	python3 -c 'import json, sys; sys.exit(json.load(open(sys.argv[1]))["service"] != "cocoonbox")' /etc/cocoonbox/tools.d/cocoonbox.json
+	systemctl cat cocoonbox-toolhost | grep -qx 'ConditionPathExists=!/etc/cocoonbox/tools.d/cocoonbox.json'
 	grep -qxF '## Pick the tool tier first' "$ROOT/AGENTS.md"
 	[ "$(grep -cF '<!-- routing -->' "$ROOT/AGENTS.md")" = 0 ]
 	grep -q '^GW_BASE_URL=http' "$ENV_FILE"
