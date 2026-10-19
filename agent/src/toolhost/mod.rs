@@ -1,7 +1,5 @@
 //! The tool host: runs every tool as the desktop user behind a unix socket.
 
-mod android;
-mod android_desk;
 mod browser;
 mod cua;
 pub mod desk;
@@ -35,7 +33,6 @@ use x11rb::connection::Connection as _;
 
 use crate::config::{Automation, ToolhostConfig};
 use crate::runs::Shots;
-use android::Android;
 use browser::Browser;
 use cua::Cua;
 use desk::Desk;
@@ -56,8 +53,8 @@ struct Host {
     shells: Mutex<HashMap<String, Arc<Mutex<Option<Shell>>>>>,
     browser: Browser,
     cua: Cua,
-    /// The screen tools of an Android box, in place of cua-driver.
-    android: Option<Android>,
+    /// An Android box, whose screen, desk and script tools run on shuttle.
+    android: bool,
     desk: Desk,
     scripts: Scripts,
     /// The plugin script tools, on a box that runs GUI plans.
@@ -88,8 +85,7 @@ impl Host {
                 cfg.automation.plans(),
             ),
             cua: Cua::new(cfg.cua_socket.clone(), cfg.automation.plans()),
-            android: (cfg.automation == Automation::Android)
-                .then(|| Android::new(cfg.adb_bin.clone())),
+            android: cfg.automation == Automation::Android,
             desk: Desk::new(shuttle.clone()),
             scripts: Scripts::new(PathBuf::from(SCRIPT_DIR), shuttle.clone()),
             plugins: cfg
@@ -220,33 +216,21 @@ impl Host {
         out
     }
 
-    /// Runs the screen, desk and script tools of an Android box; on a box that runs shuttle, every call but a run comes back, its screen tools under shuttle's names.
+    /// Runs the scripts and plans of an Android box on shuttle with its screen; every other call comes back, its screen tools under shuttle's names.
     async fn android_call(&self, mut call: Call) -> Result<Result<Output, String>, Call> {
-        let Some(android) = &self.android else {
+        let (true, Some(shuttle)) = (self.android, &self.shuttle) else {
             return Err(call);
         };
-        if let Some(shuttle) = &self.shuttle {
-            let screen = ShuttleScreen(shuttle);
-            return Ok(match call.tool.as_str() {
-                "script_run" => self.scripts.run(&screen, &self.workspace, call.args).await,
-                "gui_plan" => self.scripts.plan(&screen, &self.workspace, call.args).await,
-                _ => {
-                    if let Some(tool) = shuttle_tool(&call.tool) {
-                        call.tool = tool;
-                    }
-                    return Err(call);
-                }
-            });
-        }
+        let screen = ShuttleScreen(shuttle);
         Ok(match call.tool.as_str() {
-            "screenshot" => android.look().await,
-            "computer_state" => android.state(call.args).await,
-            "computer_act" => android.act(call.args).await,
-            "computer_end" => android.end(&call.args).await.map(Output::text),
-            t if t.starts_with("desk_") => android_desk::run(android, t, call.args).await,
-            "script_run" => self.scripts.run(android, &self.workspace, call.args).await,
-            "gui_plan" => self.scripts.plan(android, &self.workspace, call.args).await,
-            _ => return Err(call),
+            "script_run" => self.scripts.run(&screen, &self.workspace, call.args).await,
+            "gui_plan" => self.scripts.plan(&screen, &self.workspace, call.args).await,
+            _ => {
+                if let Some(tool) = shuttle_tool(&call.tool) {
+                    call.tool = tool;
+                }
+                return Err(call);
+            }
         })
     }
 
@@ -575,7 +559,6 @@ mod tests {
             home: dir.path().into(),
             automation: Automation::Desk,
             plugins: Vec::new(),
-            adb_bin: "adb".into(),
             shuttle_socket: None,
         };
         let host = Host::new(&cfg);
@@ -646,17 +629,8 @@ mod tests {
     ];
 
     #[tokio::test]
-    async fn an_android_box_with_shuttle_sends_its_screen_desk_and_run_calls_there_and_runs_no_adb()
-    {
+    async fn an_android_box_sends_its_screen_desk_and_run_calls_to_shuttle() {
         let dir = tempfile::tempdir().unwrap();
-        let ran = dir.path().join("adb-ran");
-        let adb = dir.path().join("adb");
-        std::fs::write(
-            &adb,
-            format!("#!/bin/sh\necho \"$@\" >> {}\n", ran.display()),
-        )
-        .unwrap();
-        std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o755)).unwrap();
         let desk = dir.path().join("desk.sock");
         let (seen, mut tools) = tokio::sync::mpsc::unbounded_channel::<String>();
         let listener = UnixListener::bind(&desk).unwrap();
@@ -691,7 +665,6 @@ mod tests {
             home: dir.path().into(),
             automation: Automation::Android,
             plugins: Vec::new(),
-            adb_bin: adb,
             shuttle_socket: Some(desk),
         };
         tokio::spawn(run(cfg));
@@ -753,11 +726,6 @@ mod tests {
                 "gui_plan",
                 "desk_look"
             ]
-        );
-        assert!(
-            !ran.exists(),
-            "the toolhost ran adb: {:?}",
-            std::fs::read_to_string(&ran)
         );
     }
 }

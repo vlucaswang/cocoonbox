@@ -1,7 +1,4 @@
-//! The desk on shuttle: its point lookups for grounding, the `desk` command, the window-list wait of the
-//! Android desk, and the driver's key names.
-
-use std::time::Duration;
+//! The desk on shuttle: its point lookups for grounding, the `desk` command, and the driver's key names.
 
 use serde_json::{Value, json};
 
@@ -11,8 +8,6 @@ use super::rpc::{Call, Client};
 
 const DEFAULT_SOCKET: &str = "/run/cocoonbox/toolhost.sock";
 const CLI_USAGE: &str = "usage: desk VERB [key=value ...|JSON]; verbs: windows, snapshot, find, read, press, act, at, key, type, click, focus, close, launch, shot, screen";
-const WAIT_MAX: Duration = Duration::from_secs(5);
-const WAIT_POLL: Duration = Duration::from_millis(10);
 const KEY_ALIASES: [(&str, &str); 47] = [
     ("control", "ctrl"),
     ("primary", "ctrl"),
@@ -128,35 +123,6 @@ pub async fn cli(args: Vec<String>) -> u8 {
     }
 }
 
-/// Lists the windows until they differ from `since` or `limit` of wall time passes, list reads included, 5 s at most.
-pub(super) async fn wait_for<F, Fut>(
-    since: Value,
-    limit: Duration,
-    mut read: F,
-) -> Result<Value, String>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<Value, String>>,
-{
-    let started = tokio::time::Instant::now();
-    let limit = limit.min(WAIT_MAX);
-    let mut last = Duration::ZERO;
-    loop {
-        tokio::time::sleep(
-            last.max(WAIT_POLL)
-                .min(limit.saturating_sub(started.elapsed())),
-        )
-        .await;
-        let at = tokio::time::Instant::now();
-        let windows = read().await?;
-        last = at.elapsed();
-        let same = windows == since;
-        if !same || started.elapsed() >= limit {
-            return Ok(json!({"changed": !same, "windows": windows}));
-        }
-    }
-}
-
 /// The driver's key names of `combo`: `ctrl+shift+s` is `["ctrl", "shift", "s"]`, an X keysym or
 /// browser alias is the driver's name (`Prior` is `pageup`), and a trailing `++` is the plus key.
 pub(super) fn key_names(combo: &str) -> Result<Vec<String>, String> {
@@ -183,137 +149,7 @@ pub(super) fn key_names(combo: &str) -> Result<Vec<String>, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
-
     use super::*;
-
-    #[tokio::test(start_paused = true)]
-    async fn a_wait_answers_on_the_first_list_that_differs_within_tens_of_ms() {
-        let since = json!([{"title": "Untitled - Mousepad"}]);
-        let lists = std::cell::Cell::new(0);
-        let started = tokio::time::Instant::now();
-        let out = wait_for(since.clone(), Duration::from_secs(4), || {
-            lists.set(lists.get() + 1);
-            let n = lists.get();
-            let since = since.clone();
-            async move {
-                Ok(if n < 3 {
-                    since
-                } else {
-                    json!([{"title": "Save As"}, {"title": "Untitled - Mousepad"}])
-                })
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(out["changed"], true);
-        assert_eq!(out["windows"][0]["title"], "Save As");
-        assert_eq!(lists.get(), 3);
-        assert!(
-            started.elapsed() < Duration::from_millis(80),
-            "{:?}",
-            started.elapsed()
-        );
-    }
-
-    #[tokio::test]
-    async fn a_wait_with_no_change_ends_at_its_timeout_with_the_same_list() {
-        let since = json!([{"title": "Desktop"}]);
-        let started = Instant::now();
-        let out = wait_for(since.clone(), Duration::from_millis(300), || {
-            let since = since.clone();
-            async move { Ok(since) }
-        })
-        .await
-        .unwrap();
-        let t = started.elapsed();
-        assert_eq!(out["changed"], false);
-        assert_eq!(out["windows"], since);
-        assert!(
-            t >= Duration::from_millis(300) && t < Duration::from_millis(600),
-            "{t:?}"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_wait_whose_lists_take_a_millisecond_ends_at_its_timeout_in_wall_time() {
-        let since = json!([{"title": "user - Thunar"}]);
-        let started = tokio::time::Instant::now();
-        let out = wait_for(since.clone(), Duration::from_millis(480), || {
-            let since = since.clone();
-            async move {
-                tokio::time::sleep(Duration::from_millis(1)).await;
-                Ok(since)
-            }
-        })
-        .await
-        .unwrap();
-        let t = started.elapsed();
-        assert_eq!(out["changed"], false);
-        assert!(
-            t >= Duration::from_millis(480) && t <= Duration::from_millis(491),
-            "{t:?}"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_zero_timeout_reads_the_list_once_at_once() {
-        let since = json!([{"title": "Desktop"}]);
-        let lists = std::cell::Cell::new(0);
-        let started = tokio::time::Instant::now();
-        let out = wait_for(since.clone(), Duration::ZERO, || {
-            lists.set(lists.get() + 1);
-            let since = since.clone();
-            async move { Ok(since) }
-        })
-        .await
-        .unwrap();
-        assert_eq!(out["changed"], false);
-        assert_eq!(lists.get(), 1);
-        assert_eq!(started.elapsed(), Duration::ZERO);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn after_a_slow_first_read_the_last_read_starts_at_the_deadline() {
-        let since = json!([{"title": "Desktop"}]);
-        let lists = std::cell::Cell::new(0);
-        let started = tokio::time::Instant::now();
-        let out = wait_for(since.clone(), Duration::from_millis(150), || {
-            lists.set(lists.get() + 1);
-            let slow = lists.get() == 1;
-            let since = since.clone();
-            async move {
-                tokio::time::sleep(Duration::from_millis(if slow { 100 } else { 1 })).await;
-                Ok(since)
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(out["changed"], false);
-        assert_eq!(lists.get(), 2);
-        assert_eq!(started.elapsed(), Duration::from_millis(151));
-    }
-
-    #[tokio::test]
-    async fn slow_lists_count_against_the_timeout() {
-        let since = json!([]);
-        let started = Instant::now();
-        let out = wait_for(since.clone(), Duration::from_millis(200), || {
-            let since = since.clone();
-            async move {
-                tokio::time::sleep(Duration::from_millis(400)).await;
-                Ok(since)
-            }
-        })
-        .await
-        .unwrap();
-        let t = started.elapsed();
-        assert_eq!(out["changed"], false);
-        assert!(
-            t >= Duration::from_millis(200) && t < Duration::from_millis(900),
-            "{t:?}"
-        );
-    }
 
     #[test]
     fn key_combinations_use_the_driver_names() {

@@ -8,7 +8,6 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use serde_json::{Value, json};
 
-use super::android::Android;
 use super::cua::Cua;
 use super::files;
 use super::rpc::{self, Call, Client, Output};
@@ -156,12 +155,6 @@ pub trait Screen: Sync {
 impl Screen for Cua {
     async fn screenshot_once(&self, max_edge: Option<u32>) -> Result<Option<String>, String> {
         Cua::screenshot_once(self, max_edge).await
-    }
-}
-
-impl Screen for Android {
-    async fn screenshot_once(&self, _max_edge: Option<u32>) -> Result<Option<String>, String> {
-        Ok(self.look().await?.image_b64)
     }
 }
 

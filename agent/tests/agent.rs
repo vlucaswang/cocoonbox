@@ -8,8 +8,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as B64;
 use cocoonbox_agent::config::{Automation, ServeConfig, ToolhostConfig};
 use cocoonbox_agent::pb::agents_client::AgentsClient;
 use cocoonbox_agent::pb::session_client::SessionClient;
@@ -35,11 +33,6 @@ use common::{owner, sign_credential, write_identity};
 
 const DEMO_ROUTING: &str = "Loops over demo items go to demo_run.";
 const PNG: &str = "iVBORw0KGgoAAAANSUhEUg==";
-const FAKE_ADB: &str = r#"echo "$*" >> "$0.log"
-case "$*" in
-"exec-out screencap -p") printf 'phone-png' ;;
-*cb.Ui) echo ready; while read -r _; do echo '<hierarchy><node text="Settings" class="android.widget.TextView" content-desc="" clickable="true" path="0" bounds="[400,400][600,480]" /></hierarchy>'; echo '<<end>>'; done ;;
-esac"#;
 const THUMB: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=";
 const TARGET_TOOLS: [&str; 7] = [
@@ -140,7 +133,7 @@ impl Harness {
         .await
     }
 
-    /// A harness of an Android box, whose toolhost drives a fake adb.
+    /// A harness of an Android box, whose toolhost relays to a fake shuttle.
     async fn with_android() -> Self {
         let day = Duration::from_secs(24 * 3600);
         Self::boot(
@@ -197,8 +190,6 @@ impl Harness {
         fake_cua(&cua_socket, Arc::clone(&cua_log));
         let session_save = dir.path().join("session-save");
         write_script(&session_save, "echo saved >> \"$0.log\"");
-        let adb_bin = dir.path().join("adb");
-        write_script(&adb_bin, FAKE_ADB);
         let tools_dir = dir.path().join("tools.d");
         let routing_dir = dir.path().join("routing.d");
         if plugin {
@@ -215,7 +206,7 @@ impl Harness {
         }
         let plugins = cocoonbox_agent::plugins::load(&tools_dir);
         let toolhost_socket = dir.path().join("toolhost.sock");
-        let shuttle_socket = (automation == Automation::Desk).then(|| {
+        let shuttle_socket = (automation != Automation::Plain).then(|| {
             let socket = dir.path().join("desk.sock");
             fake_shuttle(&socket, dir.path().join("shuttle.log"));
             socket
@@ -246,7 +237,6 @@ impl Harness {
             home: home.clone(),
             automation,
             plugins: plugins.clone(),
-            adb_bin,
             shuttle_socket,
         };
         tokio::spawn(async move { toolhost::run(th_cfg).await });
@@ -3763,7 +3753,7 @@ async fn hello_names_the_box_automation_and_its_screen() {
 }
 
 #[tokio::test]
-async fn mcp_on_an_android_box_drives_the_phone_through_adb() {
+async fn mcp_on_an_android_box_drives_the_phone_through_shuttle() {
     let h = Harness::with_android().await;
     let init: Value = reqwest::Client::new()
         .post(format!("{}/mcp", h.endpoint))
@@ -3798,36 +3788,19 @@ async fn mcp_on_an_android_box_drives_the_phone_through_adb() {
         ]
     );
 
-    let shot = mcp.call("screenshot", json!({})).await;
-    assert_eq!(shot["isError"], false, "{shot}");
-    assert_eq!(shot["content"][1]["data"], B64.encode("phone-png"));
-
-    let state = mcp.call("computer_state", json!({})).await;
-    assert_eq!(
-        state["content"][0]["text"],
-        "[0] button \"Settings\" at 500,440"
-    );
-    let stale = mcp
-        .call(
-            "computer_act",
-            json!({"action": "type", "text": "x", "element": 9}),
-        )
-        .await;
-    assert_eq!(stale["isError"], true, "{stale}");
+    for tool in ["screenshot", "computer_state"] {
+        let out = mcp.call(tool, json!({})).await;
+        assert_eq!(out["isError"], false, "{tool}: {out}");
+    }
     let tap = mcp
         .call("computer_act", json!({"action": "tap", "element": 0}))
         .await;
     assert_eq!(tap["isError"], false, "{tap}");
-    assert_eq!(tap["content"][1]["data"], B64.encode("phone-png"));
-    let back = mcp
-        .call("computer_act", json!({"action": "key", "key": "back"}))
-        .await;
-    assert_eq!(back["content"][0]["text"], "pressed back");
-
-    let log = std::fs::read_to_string(h._dir.path().join("adb.log")).unwrap();
-    assert!(log.contains("shell input tap 500 440\n"), "{log}");
-    assert!(log.contains("shell input keyevent 4\n"), "{log}");
-    assert!(!log.contains("cb-scrcpy.jar"), "{log}");
+    let log = std::fs::read_to_string(h._dir.path().join("shuttle.log")).unwrap();
+    assert_eq!(
+        log, "desk_look\ndesk_computer_state\ndesk_computer_act\n",
+        "{log}"
+    );
 }
 
 #[tokio::test]

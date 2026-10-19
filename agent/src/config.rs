@@ -34,7 +34,7 @@ pub enum Automation {
     Plain,
     /// GUI plans and scripts on Node with the desk API.
     Desk,
-    /// Android in the box, driven through adb: the cbdroid family.
+    /// Android in the box, driven by shuttle's adb backend: the cbdroid family.
     Android,
 }
 
@@ -55,7 +55,7 @@ impl Automation {
         self == Self::Desk
     }
 
-    /// Whether the box runs GUI plans and scripts on the desk API: a desk box, and an Android box through adb.
+    /// Whether the box runs GUI plans and scripts on the desk API: a desk box, and an Android box on shuttle.
     pub fn scripts(self) -> bool {
         self != Self::Plain
     }
@@ -179,8 +179,6 @@ pub struct ToolhostConfig {
     pub automation: Automation,
     /// Script tools the image adds, each run by its own program.
     pub plugins: Vec<Plugin>,
-    /// The adb program of an Android box.
-    pub adb_bin: PathBuf,
     /// shuttle's desk endpoint, which answers the desk verbs, model calls and runs when set.
     pub shuttle_socket: Option<PathBuf>,
 }
@@ -220,7 +218,6 @@ impl ToolhostConfig {
             home: home.into(),
             automation: Automation::detect(),
             plugins: plugins::load(Path::new(&optional("TOOLS_DIR", TOOLS_DIR))),
-            adb_bin: optional("ADB_BIN", "adb").into(),
         })
     }
 }
