@@ -99,6 +99,8 @@ switch_driver() {
 		/etc/systemd/user/cua-driver.service.d/no-overlay.conf /etc/systemd/user/cua-driver.service.d/no-update-check.conf
 	systemctl --global mask cua-driver.service
 	install -d -o user -g user "$WANTS"
+	sed -i 's#^d /run/cocoonbox 2770 user cbagent -$#d /run/cocoonbox 2750 user cbagent -#' /etc/tmpfiles.d/cocoonbox.conf
+	chmod 2750 /run/cocoonbox
 	ln -sfn /etc/systemd/user/cocoon-shuttle.service "$WANTS/cocoon-shuttle.service"
 	chown -h user:user "$WANTS/cocoon-shuttle.service"
 	systemctl --user -M user@ daemon-reload
@@ -130,6 +132,7 @@ check() {
 	[ "$(systemctl --user -M user@ is-enabled cua-driver.service 2>/dev/null)" = masked ]
 	[ ! -e /etc/xdg/autostart/cocoonbox-cua-driver.desktop ]
 	for _ in $(seq 60); do [ -S /run/cocoonbox/desk.sock ] && [ -S /run/cocoonbox/driver.sock ] && break; sleep 0.5; done
+	[ "$(stat -c %a:%U:%G /run/cocoonbox)" = 2750:user:cbagent ]
 	[ "$(stat -c %a:%G /run/cocoonbox/desk.sock)" = 660:cbagent ]
 	[ "$(pgrep -u user -x cua-driver | wc -l)" = 1 ]
 	tr '\0' '\n' <"/proc/$(pgrep -u user -x cua-driver)/cmdline" | grep -qx -- --no-overlay
