@@ -13,4 +13,4 @@ This box is an Ubuntu 24.04 VM without a desktop that runs Android 16 (720x1280)
 - A window is an app's activity or dialog, titled `<title> - <package>`, such as `Settings - com.android.settings`; `{app: "<package>"}` opens or brings up an app.
 - Elements are the accessibility nodes on the screen: a list row is named by its text, a row with a switch is one check box. A press scrolls an element in a scrollable list into view, also from under the navigation bar or the keyboard; any other element off the screen escalates. A list row that Android has not loaded yet is not in the tree: swipe the list first.
 - Keys keep their desktop meaning (`home` and `end` move in a text field); the phone's keys are `back`, `home_screen` and `recents`.
-- One accessibility client runs at a time: while the agent's UI server runs, `uiautomator dump` fails; use computer_state or `desk snapshot`.
+- One accessibility client runs at a time: while shuttle's UI server runs, `uiautomator dump` fails; use computer_state or `desk snapshot`.

@@ -8,7 +8,6 @@ An Android box is a template of family `cbdroid`: an Ubuntu 24.04 VM that runs A
 |---|---|
 | guest provisioning (docker, adb, scrcpy-rfb, users, units) | `image/android/provision.sh`, `image/android/rootfs/` |
 | ashmem for the 24.04 kernel, which Android's gralloc needs | `image/android/ashmem/` (GPL-2.0, built in the base) |
-| the UI server: the accessibility tree from a resident `app_process`, built in the base | `image/android/ui/` |
 | Node and the desk runtime of cbcore, for GUI plans and scripts | `image/android/provision.sh` (`setup_desk`) |
 | cut, from the base and a release's agent | `image/android/cut.sh` |
 

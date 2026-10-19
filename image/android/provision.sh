@@ -1,5 +1,5 @@
 #!/bin/bash
-# Provisions the Android box base (Ubuntu 24.04, docker, scrcpy-rfb, ashmem, the UI server, the desk runtime) as root.
+# Provisions the Android box base (Ubuntu 24.04, docker, scrcpy-rfb, ashmem, the desk runtime) as root.
 # Runs from a copy of image/android in the base build (base/Dockerfile), after /var/lib/docker holds the baked container.
 set -euo pipefail
 
@@ -115,13 +115,7 @@ setup_scrcpy() {
 	! ldd /usr/local/bin/scrcpy-rfb | grep 'not found'
 }
 
-# the UI server dumps the accessibility tree from a resident app_process, without uiautomator's start and idle wait
-setup_ui() {
-	log "UI server"
-	install -D -m 0644 "$SRC/ui/cb-ui.jar" /usr/local/share/cocoonbox/cb-ui.jar
-}
-
-# GUI plans and scripts run the desk runtime of cbcore on Node; the toolhost serves its calls from Android
+# GUI plans and scripts run the desk runtime of cbcore on Node; shuttle serves their desk calls from Android
 setup_desk() {
 	log "node $NODE_VERSION and the desk runtime"
 	local dir=/opt/node/$NODE_VERSION tmp
@@ -171,7 +165,6 @@ setup_ashmem
 setup_users
 install_rootfs
 setup_scrcpy
-setup_ui
 setup_desk
 setup_cocoonbox_dirs
 enable_units

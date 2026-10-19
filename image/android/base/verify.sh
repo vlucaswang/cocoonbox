@@ -5,7 +5,6 @@ kver=$(ls /lib/modules | sort -V | tail -1)
 modinfo -k "$kver" ashmem_linux >/dev/null
 modinfo -k "$kver" binder_linux >/dev/null
 modinfo -k "$kver" btrfs >/dev/null
-test -s /usr/local/share/cocoonbox/cb-ui.jar
 ldd /usr/local/bin/scrcpy-rfb | grep -q 'not found' && exit 1
 test -s /usr/local/share/scrcpy/scrcpy-server-shell.jar
 grep -q -- '--clipboard-port "$CLIP_PORT"' /usr/local/lib/cocoonbox/remoteview
