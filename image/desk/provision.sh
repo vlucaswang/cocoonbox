@@ -4,8 +4,8 @@
 set -euo pipefail
 
 # loomhand/cua dev, built by cua-driver.sh; cut.sh brings it in as vendor/
-CUA_VERSION=0.35.4-loomhand.1
-CUA_SHA256=b5506f1dea38d1930e5f5b94d244f9f1173074ec138c6d4a99c732c1ec970bc5
+CUA_VERSION=0.36.0-loomhand.5
+CUA_SHA256=e54c05edb2c96953da381b9a196f0dbb8970a9930c60832c7112f96e9e9ffffb
 CUA_TARBALL="cua-driver-rs-${CUA_VERSION}-linux-x86_64.tar.gz"
 NODE_VERSION=24.21.0
 ROOT=/opt/desk
@@ -13,6 +13,8 @@ ENV_FILE=/etc/cocoonbox/desk.env
 AGENT_ENV=/etc/cocoonbox/agent.env
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=image/desk/shuttle.sh
+. "$SRC/shuttle.sh"
 
 log() { printf '[desk] %s\n' "$*"; }
 
@@ -32,6 +34,13 @@ install_cua_driver() {
 	systemctl --user -M user@ restart cua-driver.service
 }
 
+install_runtime() {
+	log "desk runtime of shuttle $SHUTTLE_VERSION"
+	local tarball="$SRC/vendor/$SHUTTLE_TARBALL"
+	[ -f "$tarball" ] || { echo "missing $tarball: fetch it with image/desk/shuttle.sh fetch image/desk/vendor" >&2; exit 1; }
+	install_shuttle_runtime "$tarball"
+}
+
 install_rootfs() {
 	log "rootfs files"
 	(cd "$SRC/rootfs" && find . -type f) | while read -r f; do
@@ -41,6 +50,8 @@ install_rootfs() {
 		esac
 	done
 	sed -i -e "/^<!-- routing -->\$/{r $SRC/routing.md" -e 'd}' "$ROOT/AGENTS.md"
+	systemctl daemon-reload
+	systemctl --user -M user@ daemon-reload
 }
 
 # the gw endpoint of the agent's contract, for the plan executor and scripts that run as user
@@ -69,6 +80,9 @@ check() {
 	[ "$(readlink -f /usr/local/bin/node)" = "/opt/node/$NODE_VERSION/bin/node" ]
 	runuser -u user -- /usr/local/bin/node -e "import('$ROOT/lib/desk.mts').then((d) => { if (typeof d.snapshot !== 'function') process.exit(1) })"
 	runuser -u user -- /usr/local/bin/node --check "$ROOT/lib/gui_plan.mts"
+	for f in desk gui_plan png; do [ -s "$ROOT/lib/$f.mts" ]; done
+	for u in cocoonbox-toolhost cocoonbox-session; do systemctl show -p Environment "$u" | grep -q 'TOOLHOST_SOCKET=/run/cocoonbox/toolhost.sock'; done
+	systemctl --user -M user@ show-environment | grep -qx 'TOOLHOST_SOCKET=/run/cocoonbox/toolhost.sock'
 	grep -qxF '## Pick the tool tier first' "$ROOT/AGENTS.md"
 	[ "$(grep -cF '<!-- routing -->' "$ROOT/AGENTS.md")" = 0 ]
 	grep -q '^GW_BASE_URL=http' "$ENV_FILE"
@@ -83,6 +97,7 @@ check() {
 }
 
 install_cua_driver
+install_runtime
 install_rootfs
 write_env
 apt_sources

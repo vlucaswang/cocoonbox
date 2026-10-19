@@ -1,5 +1,7 @@
 #![cfg(test)]
 
+mod common;
+
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
@@ -14,12 +16,12 @@ use tonic::Request;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
 
-const TOKEN: &str = "edge-token-for-shutdown";
-
 fn authed<T>(msg: T) -> Request<T> {
     let mut req = Request::new(msg);
-    req.metadata_mut()
-        .insert("x-cocoonbox-edge-token", MetadataValue::from_static(TOKEN));
+    req.metadata_mut().insert(
+        "x-cocoonbox-credential",
+        MetadataValue::from_static(common::owner()),
+    );
     req
 }
 
@@ -61,16 +63,21 @@ async fn free_port() -> u16 {
 async fn sigterm_with_open_streams_and_a_running_turn_exits_quickly() {
     let dir = tempfile::tempdir().unwrap();
     let port = free_port().await;
+    let identity = dir.path().join("identity").join("identity");
+    common::provision(&identity);
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_cocoonbox-agent"))
         .arg("serve")
         .env("GW_BASE_URL", format!("http://{}/v1", hanging_gw().await))
         .env("GW_API_KEY", "k")
         .env("MODEL_MAIN", "deepseek/deepseek-v4.1-flash")
         .env("MODEL_COMPUTER", "anthropic/claude-sonnet-5")
-        .env("EDGE_TOKEN", TOKEN)
         .env("AGENT_LISTEN", format!("127.0.0.1:{port}"))
         .env("CB_STATE_DIR", dir.path())
-        .env("CB_IDENTITY_PATH", dir.path().join("no-identity"))
+        .env("CB_IDENTITY_PATH", &identity)
+        .env(
+            "CB_IDENTITY_OWNER",
+            std::os::unix::fs::MetadataExt::uid(&dir.path().metadata().unwrap()).to_string(),
+        )
         .env("TOOLHOST_SOCKET", dir.path().join("none.sock"))
         .env("VNC_ADDR", banner_vnc().await)
         .stderr(Stdio::piped())
@@ -112,7 +119,7 @@ async fn sigterm_with_open_streams_and_a_running_turn_exits_quickly() {
     let http = reqwest::Client::new();
     let init = http
         .post(format!("{endpoint}/mcp"))
-        .header("x-cocoonbox-edge-token", TOKEN)
+        .header("x-cocoonbox-credential", common::owner())
         .json(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"clientInfo": {"name": "t"}}}))
         .send()
         .await
@@ -123,7 +130,7 @@ async fn sigterm_with_open_streams_and_a_running_turn_exits_quickly() {
         .to_owned();
     let mut mcp_stream = http
         .get(format!("{endpoint}/mcp"))
-        .header("x-cocoonbox-edge-token", TOKEN)
+        .header("x-cocoonbox-credential", common::owner())
         .header("mcp-session-id", &sid)
         .send()
         .await

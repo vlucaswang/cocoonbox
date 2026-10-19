@@ -1,0 +1,12 @@
+#!/bin/sh
+# usage: cb-alert TEXT journals one alert under the tag cb-alert; cb-alert --digest journals one line counting the last day's
+# alerts and naming the checks still above ok
+set -eu
+
+if [ "${1:-}" = --digest ]; then
+	n=$(journalctl -q -t cb-alert --since -24h -o cat | grep -vc '^digest:' || true)
+	open=$(awk '$2 != "ok" { printf "%s%s=%s", sep, $1, $2; sep = " " }' /run/cb-disk-alert 2>/dev/null || true)
+	logger -p user.notice -t cb-alert -- "digest: $n alerts in 24 h; open: ${open:-none}"
+	exit 0
+fi
+logger -p user.warning -t cb-alert -- "$(hostname -s): ${1:?usage: cb-alert TEXT | --digest}"

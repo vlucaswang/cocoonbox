@@ -32,6 +32,7 @@ const (
 	leaseSeconds           = 3600
 	onExpire               = "archive"
 	identityTimeoutSeconds = 30
+	screenPort             = 5900
 
 	refreshInterval = 2 * time.Second
 	renewInterval   = 5 * time.Minute
@@ -305,9 +306,15 @@ func (b *Backend) Address(_ context.Context, id string) (machines.Endpoint, erro
 	}
 	sandbox := e.row.ID
 	key := net.JoinHostPort(sandbox+".sandboxd", strconv.Itoa(b.opts.AgentPort))
-	return machines.Endpoint{Key: key, Dial: func(ctx context.Context) (net.Conn, error) {
-		return b.api.dialPort(ctx, sandbox, b.opts.AgentPort)
-	}}, nil
+	return machines.Endpoint{
+		Key: key,
+		Dial: func(ctx context.Context) (net.Conn, error) {
+			return b.api.dialPort(ctx, sandbox, b.opts.AgentPort)
+		},
+		Screen: func(ctx context.Context) (net.Conn, error) {
+			return b.api.dialPort(ctx, sandbox, screenPort)
+		},
+	}, nil
 }
 
 func (b *Backend) Delete(ctx context.Context, id string) error {

@@ -11,7 +11,7 @@ const DESK_ROUTE: &str = include_str!("../../image/desk/route.json");
 const TASK: &str = "\"__TASK__\"";
 const TIMEOUT: Duration = Duration::from_secs(2);
 const BUILDS: &str = "typesafe/jev-1.14-";
-const BUILD: &str = "typesafe/jev-1.14-20261014";
+pub(crate) const BUILD: &str = "typesafe/jev-1.14-20261014";
 const ERROR_BODY_CHARS: usize = 300;
 
 /// Lowest confidence at which a route is followed rather than left to the caller.
@@ -175,7 +175,7 @@ pub fn meaning(tier: &str) -> Option<&'static str> {
 }
 
 /// Whether `model` names a dated build of the router's jev version.
-fn is_build(model: &str) -> bool {
+pub(crate) fn is_build(model: &str) -> bool {
     model
         .strip_prefix(BUILDS)
         .is_some_and(|d| d.len() == 8 && d.bytes().all(|b| b.is_ascii_digit()))

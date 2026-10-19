@@ -7,7 +7,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use desk_core::args::{
     ActArgs, AtArgs, ClickArgs, FindArgs, IdArgs, KeyArgs, LaunchArgs, ReadArgs, ShotArgs,
-    SnapArgs, TypeArgs, WindowArgs, parse,
+    SnapArgs, TypeArgs, WaitArgs, WindowArgs, parse,
 };
 use desk_core::text::{MAX_FOUND, NAME_CHARS, Named, matches, ms, quote};
 use desk_core::window::{self, Window};
@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 
 use super::android::{Android, SCREEN};
 use super::cua::png_rgb;
+use super::desk::wait_for;
 use super::rpc::Output;
 
 const APPLICATION: i64 = 1;
@@ -26,6 +27,8 @@ const SWITCH_POLLS: u32 = 10;
 const SCROLL_TRIES: u32 = 6;
 const SCROLL_MS: &str = "600";
 const SCROLL_SETTLE: Duration = Duration::from_millis(400);
+const MIN_SPAN: i32 = 8;
+const MIN_SWIPE: i32 = 48;
 
 /// One element of a window as the desk and computer_state show it.
 #[derive(Debug)]
@@ -121,6 +124,7 @@ struct Frame {
     pid: u32,
     active: bool,
     bounds: [i32; 4],
+    covers: Vec<[i32; 4]>,
 }
 
 impl Frame {
@@ -131,6 +135,38 @@ impl Frame {
             "role": if self.dialog { "dialog" } else { "frame" },
             "pid": self.pid,
             "active": self.active,
+        })
+    }
+
+    fn span(&self, x: i32, top: i32, bottom: i32) -> Option<(i32, i32)> {
+        if !(0..SCREEN.0).contains(&x) {
+            return None;
+        }
+        let mut open = vec![(top.max(0), bottom.min(SCREEN.1))];
+        for &[cx, cy, cw, ch] in &self.covers {
+            if (cx..cx + cw).contains(&x) {
+                open = open
+                    .into_iter()
+                    .flat_map(|(a, b)| [(a, b.min(cy)), (a.max(cy + ch), b)])
+                    .filter(|(a, b)| b > a)
+                    .collect();
+            }
+        }
+        open.into_iter()
+            .filter(|(a, b)| b - a >= MIN_SPAN)
+            .max_by_key(|(a, b)| b - a)
+    }
+
+    fn swipe(&self, [sx, sy, sw, sh]: [i32; 4], target: i32) -> Option<(i32, i32, i32)> {
+        let x = sx + sw / 2;
+        let (top, bottom) = self
+            .span(x, sy, sy + sh)
+            .filter(|(top, bottom)| bottom - top >= MIN_SWIPE)?;
+        let (low, high) = (top + (bottom - top) * 3 / 4, top + (bottom - top) / 4);
+        Some(if target >= top + (bottom - top) / 2 {
+            (x, low, high)
+        } else {
+            (x, high, low)
         })
     }
 }
@@ -201,6 +237,16 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
         "desk_windows" => {
             Value::Array(frames(android).await?.iter().map(Frame::json).collect()).to_string()
         }
+        "desk_wait" => {
+            let a: WaitArgs = parse(args)?;
+            wait_for(a.since, Duration::from_millis(a.timeout_ms), || async {
+                Ok(Value::Array(
+                    frames(android).await?.iter().map(Frame::json).collect(),
+                ))
+            })
+            .await?
+            .to_string()
+        }
         "desk_snapshot" => snapshot(android, parse(args)?).await?,
         "desk_find" => find(android, parse(args)?).await?,
         "desk_read" => read(android, parse(args)?).await?,
@@ -262,14 +308,37 @@ async fn frames(android: &Android) -> Result<Vec<Frame>, String> {
     for _ in 0..SWITCH_POLLS {
         let list: Vec<WindowInfo> = serde_json::from_str(android.windows().await?.trim())
             .map_err(|e| format!("decode windows: {e}"))?;
-        shown = listed(list);
+        shown = frames_of(list);
         if !shown.is_empty() {
             break;
         }
         tokio::time::sleep(FOCUS_POLL).await;
     }
+    Ok(shown)
+}
+
+fn frames_of(list: Vec<WindowInfo>) -> Vec<Frame> {
+    let system: Vec<(i64, [i32; 4])> = list
+        .iter()
+        .filter(|w| w.kind != APPLICATION)
+        .map(|w| (w.layer, w.bounds))
+        .collect();
+    let shown = listed(list);
     let alone = shown.len() == 1;
-    Ok(shown.into_iter().map(|w| frame(w, alone)).collect())
+    shown
+        .into_iter()
+        .map(|w| {
+            let covers = system
+                .iter()
+                .filter(|(layer, _)| *layer > w.layer)
+                .map(|&(_, [l, t, r, b])| [l, t, r - l, b - t])
+                .collect();
+            Frame {
+                covers,
+                ..frame(w, alone)
+            }
+        })
+        .collect()
 }
 
 fn listed(list: Vec<WindowInfo>) -> Vec<WindowInfo> {
@@ -302,6 +371,7 @@ fn frame(w: WindowInfo, alone: bool) -> Frame {
         dialog: !full,
         active: w.active,
         bounds: [l, t, r - l, b - t],
+        covers: Vec::new(),
     }
 }
 
@@ -669,23 +739,25 @@ async fn read(android: &Android, a: ReadArgs) -> Result<String, String> {
 
 /// Taps an element, after scrolling its list until it shows.
 async fn press(android: &Android, id: &str) -> Result<String, String> {
-    let (frame, mut node) = node(android, id).await?;
+    let (mut frame, mut node) = node(android, id).await?;
     for _ in 0..SCROLL_TRIES {
-        let (x, y) = node.center();
-        let [_, _, w, h] = node.bounds;
-        if node.visible && w > 0 && h > 0 && on_screen(x, y) {
+        let [x, y, w, h] = node.bounds;
+        let x = x + w / 2;
+        if node.visible
+            && w > 0
+            && h > 0
+            && let Some((top, bottom)) = frame.span(x, y, y + h)
+        {
+            let y = (top + bottom) / 2;
             android.tap((x, y)).await?;
             return Ok(json!({"ok": true, "how": "click", "x": x, "y": y}).to_string());
         }
         let Some([sx, sy, sw, sh]) = node.scroller else {
             break;
         };
-        let (cx, low, high) = (sx + sw / 2, sy + sh * 3 / 4, sy + sh / 4);
-        let (from, to) = if node.bounds[1] >= sy + sh / 2 {
-            (low, high)
-        } else {
-            (high, low)
-        };
+        let (cx, from, to) = frame
+            .swipe([sx, sy, sw, sh], node.bounds[1])
+            .ok_or_else(|| format!("element {id} is off the screen, and its list is covered"))?;
         android
             .input(&[
                 "swipe",
@@ -697,17 +769,14 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
             ])
             .await?;
         tokio::time::sleep(SCROLL_SETTLE).await;
-        let (_, mut nodes) = app_tree(android, &frame.package).await?;
+        let (refreshed, mut nodes) = app_tree(android, &frame.package).await?;
+        frame = refreshed;
         let i = unique(&nodes, node.role, &node.name).ok_or_else(|| {
             format!("element {id} is gone or not unique after a scroll; read the window again")
         })?;
         node = nodes.swap_remove(i);
     }
     Err(format!("element {id} is off the screen"))
-}
-
-fn on_screen(x: i32, y: i32) -> bool {
-    (0..SCREEN.0).contains(&x) && (0..SCREEN.1).contains(&y)
 }
 
 /// The innermost element at a screen point, with its ancestors.
@@ -884,6 +953,111 @@ mod tests {
         assert!(
             shown[0].active,
             "without an active window the top app is in front"
+        );
+    }
+
+    #[test]
+    fn a_tap_under_the_navigation_or_status_bar_does_not_reach_the_app() {
+        let bar = |id, layer, bounds| WindowInfo {
+            id,
+            kind: 3,
+            title: String::new(),
+            package: "com.android.systemui".into(),
+            active: false,
+            focused: false,
+            layer,
+            bounds,
+        };
+        let frames = frames_of(vec![
+            bar(5, 2, [0, 1184, 720, 1280]),
+            bar(1, 1, [0, 0, 720, 48]),
+            window([0, 0, 720, 1280]),
+        ]);
+        assert_eq!(frames.len(), 1);
+        let settings = &frames[0];
+        assert_eq!(settings.covers, [[0, 1184, 720, 96], [0, 0, 720, 48]]);
+        assert_eq!(settings.span(360, 700, 826), Some((700, 826)));
+        assert_eq!(
+            settings.span(360, 1224, 1248),
+            None,
+            "the navigation bar takes the tap"
+        );
+        assert_eq!(
+            settings.span(360, 10, 40),
+            None,
+            "the status bar takes the tap"
+        );
+        assert_eq!(settings.span(360, 1300, 1340), None);
+        assert_eq!(settings.span(800, 700, 826), None);
+        assert_eq!(
+            settings.span(360, 1144, 1224),
+            Some((1144, 1184)),
+            "a button partly under the bar is tapped in its open part"
+        );
+        assert_eq!(
+            settings.span(360, 600, 1280),
+            Some((600, 1184)),
+            "a list's swipe stays above the bar"
+        );
+        let ime = WindowInfo {
+            kind: 2,
+            ..bar(9, 3, [0, 700, 720, 1184])
+        };
+        let typing = frames_of(vec![
+            ime,
+            bar(5, 2, [0, 1184, 720, 1280]),
+            window([0, 0, 720, 1280]),
+        ]);
+        assert_eq!(
+            typing[0].span(360, 760, 820),
+            None,
+            "the keyboard covers the field"
+        );
+        let closed = frames_of(vec![
+            bar(5, 2, [0, 1184, 720, 1280]),
+            window([0, 0, 720, 1280]),
+        ]);
+        assert_eq!(
+            closed[0].span(360, 760, 820),
+            Some((760, 820)),
+            "a refreshed frame without the keyboard"
+        );
+    }
+
+    #[test]
+    fn a_list_swipe_runs_in_its_open_band_and_needs_room() {
+        let bar = |id, kind, layer, bounds| WindowInfo {
+            id,
+            kind,
+            title: String::new(),
+            package: "com.android.systemui".into(),
+            active: false,
+            focused: false,
+            layer,
+            bounds,
+        };
+        let phone = frames_of(vec![
+            bar(5, 3, 2, [0, 1184, 720, 1280]),
+            window([0, 0, 720, 1280]),
+        ]);
+        assert_eq!(
+            phone[0].swipe([0, 600, 720, 680], 1224),
+            Some((360, 1038, 746))
+        );
+        assert_eq!(
+            phone[0].swipe([0, 600, 720, 680], 610),
+            Some((360, 746, 1038))
+        );
+        let typing = frames_of(vec![
+            bar(9, 2, 3, [0, 0, 720, 1000]),
+            bar(5, 3, 2, [0, 1008, 720, 1280]),
+            window([0, 0, 720, 1280]),
+        ]);
+        assert_eq!(typing[0].span(360, 600, 1280), Some((1000, 1008)));
+        assert_eq!(
+            typing[0].swipe([0, 600, 720, 680], 1224),
+            None,
+            "an 8 px band is no swipe"
         );
     }
 

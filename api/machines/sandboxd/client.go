@@ -261,6 +261,14 @@ type bufferedConn struct {
 
 func (c *bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 
+// CloseWrite half-closes the relay, which sandboxd carries to the guest port.
+func (c *bufferedConn) CloseWrite() error {
+	if tc, ok := c.Conn.(*net.TCPConn); ok {
+		return tc.CloseWrite()
+	}
+	return c.Close()
+}
+
 func responseError(resp *http.Response) error {
 	var body struct {
 		Error string `json:"error"`

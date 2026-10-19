@@ -1,15 +1,38 @@
 #!/bin/sh
-# nightly pg_dump of every database on the local cluster; keeps the newest KEEP dumps per database
+# pg_dump of every database on the local cluster; keeps the newest KEEP dumps per database, and copies each off the host,
+# encrypted with age to the recipient in /etc/cocoonbox/backup.age.pub, as cocoonbox-backup:pg/<host>/<db>/<stamp>.dump.age.
 set -eu
 
 DIR=${CB_PG_DUMP_DIR:-/var/backups/cb-pg}
-KEEP=7
+KEEP=28
+BUCKET=cocoonbox-backup
+RECIPIENT=/etc/cocoonbox/backup.age.pub
+
+upload() {
+	age -R "$RECIPIENT" -o "$1.age" "$1" || return 1
+	cb-s3 put "$BUCKET" "pg/$(hostname -s)/$2/$3.dump.age" "$1.age"
+	ok=$?
+	rm -f "$1.age"
+	return $ok
+}
 
 umask 077
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
-for db in $(psql -XAtc "SELECT datname FROM pg_database WHERE NOT datistemplate AND datname <> 'postgres' ORDER BY 1"); do
-	pg_dump -Fc -f "$DIR/.$db-$stamp.dump" "$db"
+failed=
+trap '[ $? -eq 0 ] || cb-alert "cb-pg-dump failed at $stamp${failed:+, upload:$failed}"' EXIT
+dbs=$(runuser -u postgres -- psql -XAtc "SELECT datname FROM pg_database WHERE NOT datistemplate AND datname <> 'postgres' ORDER BY 1")
+[ -n "$dbs" ] || { echo "cb-pg-dump: the cluster lists no database to dump" >&2; exit 1; }
+while IFS= read -r db; do
+	runuser -u postgres -- pg_dump -Fc "$db" > "$DIR/.$db-$stamp.dump"
 	mv "$DIR/.$db-$stamp.dump" "$DIR/$db-$stamp.dump"
 	ls -1 "$DIR" | grep -E "^$db-[0-9]{8}T[0-9]{6}Z\.dump\$" | sort -r | tail -n +$((KEEP + 1)) | while read -r old; do rm -f "$DIR/$old"; done
-	logger -t cb-pg-dump -- "dumped $db ($(stat -c %s "$DIR/$db-$stamp.dump") bytes)" 2>/dev/null || true
-done
+	logger -t cb-pg-dump -- "dumped $db ($(stat -c %s "$DIR/$db-$stamp.dump") bytes)"
+	if upload "$DIR/$db-$stamp.dump" "$db" "$stamp"; then
+		logger -t cb-pg-dump -- "uploaded $db-$stamp"
+	else
+		failed="$failed $db"
+	fi
+done <<DBS
+$dbs
+DBS
+[ -z "$failed" ]

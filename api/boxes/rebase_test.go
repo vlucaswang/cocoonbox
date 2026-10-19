@@ -24,9 +24,9 @@ const (
 
 func TestRebaseAfterCapacityRefusalsEndsRunningOnTheNewMachine(t *testing.T) {
 	node := newFakeNode(t)
-	node.add(aliceBox, "desktop-v1", time.Now().Add(-time.Hour))
+	node.add(aliceBox, "desktop:v1", time.Now().Add(-time.Hour))
 	node.refusals = 2
-	backend, err := sandboxd.New(t.Context(), sandboxd.Options{URL: node.srv.URL, Token: nodeToken, Image: "desktop-v1", Flavors: []machines.Flavor{defaultFlavor}, DiskGiB: 40, AgentPort: 7443})
+	backend, err := sandboxd.New(t.Context(), sandboxd.Options{URL: node.srv.URL, Token: nodeToken, Image: "desktop:v1", Flavors: []machines.Flavor{defaultFlavor}, DiskGiB: 40, AgentPort: 7443})
 	if err != nil {
 		t.Fatalf("sandboxd.New: %v", err)
 	}

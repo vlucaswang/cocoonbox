@@ -477,7 +477,7 @@ func (e *stateEnv) addBox(t *testing.T, box string) {
 	if _, err := e.svc.registry.AddBox(e.ctx, users.Box{ID: box, Owner: alice, Name: box}); err != nil {
 		t.Fatalf("AddBox: %v", err)
 	}
-	e.fake.put(machines.Machine{ID: box, Owner: alice, State: machines.StateRunning, Flavor: defaultFlavor, Image: "desktop-v1", Revision: 1})
+	e.fake.put(machines.Machine{ID: box, Owner: alice, State: machines.StateRunning, Flavor: defaultFlavor, Image: "desktop:v1", Revision: 1})
 }
 
 func (e *stateEnv) saveBox(t *testing.T, box string) {

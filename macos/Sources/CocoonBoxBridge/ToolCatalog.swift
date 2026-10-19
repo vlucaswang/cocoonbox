@@ -8,14 +8,14 @@ public enum ToolCatalog {
     nonisolated(unsafe) static let box: [String: Any] = ["type": "string", "description": "The box's name or id, as box_list shows them; without it, the default box of this session."]
 
     nonisolated(unsafe) public static let control: [[String: Any]] = [
-        tool("box_list", "List your cocoonbox cloud desktops with their names, states and images.", [:]),
-        tool("box_status", "Show the state of your cocoonbox cloud desktop: running or hibernated, its image, whether an upgrade is available, and when your files were last saved.", ["box": box]),
-        tool("box_ensure", "Start or wake your cocoonbox cloud desktop and wait until it is running. Waking takes a few seconds; creating a new box takes longer.", ["box": box, "wait": ["type": "boolean", "default": true]]),
-        tool("box_create", "Create another cocoonbox cloud desktop with this name and wait until it is running. Your other boxes stay as they are; only a limited number may run at once.", ["name": ["type": "string"], "wait": ["type": "boolean", "default": true]], required: ["name"]),
-        tool("box_hibernate", "Hibernate your cocoonbox cloud desktop. Running programs and memory are kept and come back on the next wake.", ["box": box]),
-        tool("box_save", "Save your files, logins and agent history from the box to storage now. The browser in the box closes during the save.", ["box": box]),
-        tool("box_upgrade", "Move your box to the latest desktop image. Running programs restart; files, logins and agent history are kept. Requires confirm: true.", ["box": box, "confirm": ["type": "boolean"]], required: ["confirm"]),
-        tool("box_delete", "Delete one of your cocoonbox cloud desktops. A running box is saved first; its saved state is kept for 7 days, then removed. Requires the box and confirm: true.", ["box": box, "confirm": ["type": "boolean"]], required: ["box", "confirm"]),
+        tool("box_list", "List your cocoonbox boxes with their names, states and images.", [:]),
+        tool("box_status", "Show the state of your cocoonbox box: running or hibernated, its image, whether an upgrade is available, and when your files were last saved.", ["box": box]),
+        tool("box_ensure", "Start or wake your cocoonbox box and wait until it is running. Waking takes a few seconds; creating a new box takes longer.", ["box": box, "wait": ["type": "boolean", "default": true]]),
+        tool("box_create", "Create another cocoonbox box with this name and wait until it is running. Your other boxes stay as they are; only a limited number may run at once.", ["name": ["type": "string"], "image": ["type": "string", "description": "An image family, such as cbdroid for an Android phone, or an image; without it, your usual desktop."], "wait": ["type": "boolean", "default": true]], required: ["name"]),
+        tool("box_hibernate", "Hibernate your cocoonbox box. Running programs and memory are kept and come back on the next wake.", ["box": box]),
+        tool("box_save", "Save your files, logins and agent history from the box to storage now. On a desktop box the browser closes during the save.", ["box": box]),
+        tool("box_upgrade", "Move your box to the latest image of its kind. Running programs restart; files, logins and agent history are kept. Requires confirm: true.", ["box": box, "confirm": ["type": "boolean"]], required: ["confirm"]),
+        tool("box_delete", "Delete one of your cocoonbox boxes. A running box is saved first; its saved state is kept for 7 days, then removed. Requires the box and confirm: true.", ["box": box, "confirm": ["type": "boolean"]], required: ["box", "confirm"]),
         tool("usage", "Show the model usage gw metered for your account, all your boxes together: requests, tokens and cost in micro-dollars today and this month (UTC), by model, with your daily cost cap (-1 unlimited) and what is left of it today. Your own model client's tokens are not in it.", [:]),
     ]
 
@@ -28,7 +28,7 @@ public enum ToolCatalog {
     ]
 
     public static var boxFallback: [[String: Any]] {
-        boxNames.map { ["name": $0, "description": "A tool on your cocoonbox cloud desktop. Its full schema loads once the box has run.", "inputSchema": ["type": "object"]] }
+        boxNames.filter { !$0.hasPrefix("browser_") }.map { ["name": $0, "description": "A tool on your cocoonbox. Its full schema loads once the box has run.", "inputSchema": ["type": "object"]] }
     }
 
     public static func loadBox(from file: URL) -> [[String: Any]]? {

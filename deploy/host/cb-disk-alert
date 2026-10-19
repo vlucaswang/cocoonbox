@@ -1,20 +1,71 @@
 #!/bin/sh
-# usage: cb-disk-alert; warns in the journal when / or /srv/cb, or an XFS project quota on /srv/cb, is at or above LIMIT percent
-LIMIT=80
+# usage: cb-disk-alert; journals the use of /, /srv/cb and each XFS project quota on /srv/cb, and whether sandboxd refuses work
+# at capacity, and runs cb-alert when one changes level (ok, WARN at 70%, CRIT at 85% or at capacity) or stays above ok for an hour
+set -u
+WARN=70
+CRIT=85
+REPEAT=3600
+STATE=/run/cb-disk-alert
 
-report() {
-	if [ "$2" -ge "$LIMIT" ]; then
-		logger -p user.warning -t cb-disk-alert "$1 at ${2}% (limit ${LIMIT}%)"
-	else
-		logger -p user.info -t cb-disk-alert "$1 at ${2}%"
+now=$(date +%s)
+touch "$STATE"
+next=$(mktemp)
+trap 'rm -f "$next" "$next.q"' EXIT
+
+check() {
+	name=$1 pct=$2
+	level=ok
+	[ "$pct" -ge "$WARN" ] && level=WARN
+	[ "$pct" -ge "$CRIT" ] && level=CRIT
+	track "$name" "$level" "disk $name at ${pct}% (warn ${WARN}%, crit ${CRIT}%)"
+}
+
+track() {
+	name=$1 level=$2 detail=$3
+	logger -p user.info -t cb-disk-alert "$detail: $level"
+	last=$(awk -v n="$name" '$1 == n { print $2 }' "$STATE")
+	sent=$(awk -v n="$name" '$1 == n { print $3 }' "$STATE")
+	last=${last:-ok} sent=${sent:-0}
+	if [ "$level" != "$last" ] || { [ "$level" != ok ] && [ $((now - sent)) -ge "$REPEAT" ]; }; then
+		if cb-alert "$detail: $level (was $last)"; then
+			sent=$now
+		else
+			level=$last
+		fi
 	fi
+	echo "$name $level $sent" >> "$next"
 }
 
 for m in / /srv/cb; do
-	report "$m" "$(df --output=pcent "$m" | tail -1 | tr -dc 0-9)"
-done
-xfs_quota -x -c 'report -p -b -N' "$(findmnt -n -o TARGET -T /srv/cb)" 2>/dev/null | while read -r name used _ hard _; do
-	if [ "$hard" -gt 0 ] 2>/dev/null; then
-		report "project $name" $((used * 100 / hard))
+	pct=$(df --output=pcent "$m" 2>/dev/null | tail -1 | tr -dc 0-9)
+	if [ -n "$pct" ]; then
+		check "$m" "$pct"
+	else
+		track "$m" CRIT "disk $m unreadable (df failed)"
 	fi
 done
+if xfs_quota -x -c 'report -p -b -N' "$(findmnt -n -o TARGET -T /srv/cb)" > "$next.q" 2>/dev/null; then
+	while read -r name used _ hard _; do
+		if [ "$hard" -gt 0 ] 2>/dev/null; then
+			check "project:$name" $((used * 100 / hard))
+		fi
+	done < "$next.q"
+	track quota ok "xfs_quota report on /srv/cb"
+	quota_failed=
+else
+	track quota CRIT "xfs_quota report on /srv/cb failed"
+	quota_failed=1
+fi
+info=$(printf 'header = "Authorization: Bearer %s"\n' "$(cat /etc/cocoonbox/sandboxd-token)" |
+	curl -fsS -m 5 -K - http://127.0.0.1:17780/v1/info 2>/dev/null)
+reason=$(printf '%s' "$info" | python3 -c 'import json, sys; i = json.load(sys.stdin); print(i.get("at_capacity_reason", "at capacity") if i.get("at_capacity") else "")' 2>/dev/null) ||
+	reason="/v1/info unreachable"
+if [ -n "$reason" ]; then
+	track sandboxd CRIT "sandboxd refuses work ($reason)"
+else
+	track sandboxd ok "sandboxd admits work"
+fi
+if [ -n "$quota_failed" ]; then
+	grep '^project:' "$STATE" >> "$next"
+fi
+mv "$next" "$STATE"

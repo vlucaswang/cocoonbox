@@ -14,7 +14,7 @@ const DEFAULT_OFFLOAD_SOCKET: &str = "/run/cocoonbox/offload.sock";
 const DEFAULT_VNC_ADDR: &str = "127.0.0.1:5900";
 const DEFAULT_WORKSPACE: &str = "/workspace";
 const IDENTITY_PATH: &str = "/run/cocoonbox-identity/identity";
-const ROOT_UID: u32 = 0;
+const ROOT_UID: &str = "0";
 const REDACTED: &str = "<redacted>";
 const DESKTOP_UNIT: &str = "cocoonbox-session.service";
 const SESSION_SAVE: &str = "/usr/local/lib/cocoonbox/session-save";
@@ -23,6 +23,7 @@ const DESK_GUIDE: &str = "/opt/desk/AGENTS.md";
 const ANDROID_GUIDE: &str = "/opt/android/AGENTS.md";
 const TOOLS_DIR: &str = "/etc/cocoonbox/tools.d";
 const ROUTING_DIR: &str = "/etc/cocoonbox/routing.d";
+const DESK_ENV: &str = "/etc/cocoonbox/desk.env";
 const MCP_IDLE: Duration = Duration::from_secs(600);
 const MCP_PRUNE_AFTER: Duration = Duration::from_secs(24 * 3600);
 const QUIESCE_WAIT: Duration = Duration::from_secs(30);
@@ -69,7 +70,6 @@ pub struct ServeConfig {
     pub gw_api_key: String,
     pub model_main: String,
     pub model_computer: String,
-    pub edge_token: Option<String>,
     pub identity_path: PathBuf,
     pub identity_owner: u32,
     pub listen: SocketAddr,
@@ -102,7 +102,6 @@ impl std::fmt::Debug for ServeConfig {
             .field("gw_api_key", &REDACTED)
             .field("model_main", &self.model_main)
             .field("model_computer", &self.model_computer)
-            .field("edge_token", &self.edge_token.as_ref().map(|_| REDACTED))
             .field("identity_path", &self.identity_path)
             .field("identity_owner", &self.identity_owner)
             .field("listen", &self.listen)
@@ -133,9 +132,10 @@ impl ServeConfig {
             gw_api_key: required("GW_API_KEY")?,
             model_main: required("MODEL_MAIN")?,
             model_computer: required("MODEL_COMPUTER")?,
-            edge_token: env::var("EDGE_TOKEN").ok().filter(|v| !v.is_empty()),
             identity_path: optional("CB_IDENTITY_PATH", IDENTITY_PATH).into(),
-            identity_owner: ROOT_UID,
+            identity_owner: optional("CB_IDENTITY_OWNER", ROOT_UID)
+                .parse()
+                .map_err(|e| format!("parse CB_IDENTITY_OWNER: {e}"))?,
             listen: listen
                 .parse()
                 .map_err(|e| format!("parse AGENT_LISTEN {listen}: {e}"))?,
@@ -177,6 +177,10 @@ pub struct ToolhostConfig {
     pub plugins: Vec<Plugin>,
     /// The adb program of an Android box.
     pub adb_bin: PathBuf,
+    /// The gw endpoint of the desk runtime's model calls.
+    pub gw_base_url: Option<String>,
+    /// shuttle's desk endpoint, which answers the desk verbs, model calls and runs when set.
+    pub shuttle_socket: Option<PathBuf>,
 }
 
 impl ToolhostConfig {
@@ -205,6 +209,13 @@ impl ToolhostConfig {
             automation: Automation::detect(),
             plugins: plugins::load(Path::new(&optional("TOOLS_DIR", TOOLS_DIR))),
             adb_bin: optional("ADB_BIN", "adb").into(),
+            gw_base_url: env::var("GW_BASE_URL")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .or_else(|| env_file_value(Path::new(DESK_ENV), "GW_BASE_URL")),
+            shuttle_socket: env::var_os("SHUTTLE_SOCKET")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from),
         })
     }
 }
@@ -237,6 +248,14 @@ fn required(key: &str) -> Result<String, String> {
     }
 }
 
+fn env_file_value(path: &Path, key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    text.lines()
+        .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
+        .map(str::to_owned)
+        .filter(|v| !v.is_empty())
+}
+
 fn optional(key: &str, default: &str) -> String {
     env::var(key)
         .ok()
@@ -255,7 +274,6 @@ mod tests {
             gw_api_key: "sk-secret-key".into(),
             model_main: "m".into(),
             model_computer: "c".into(),
-            edge_token: Some("edge-secret".into()),
             identity_path: "/i".into(),
             identity_owner: 0,
             listen: "127.0.0.1:1".parse().unwrap(),
@@ -275,10 +293,7 @@ mod tests {
             routing_extra: Vec::new(),
         };
         let shown = format!("{cfg:?}");
-        assert!(
-            !shown.contains("sk-secret-key") && !shown.contains("edge-secret"),
-            "{shown}"
-        );
+        assert!(!shown.contains("sk-secret-key"), "{shown}");
         assert!(
             shown.contains("<redacted>") && shown.contains("http://gw/v1"),
             "{shown}"

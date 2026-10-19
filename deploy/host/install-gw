@@ -2,7 +2,7 @@
 # Installs gw on the cb bridge (10.203.0.1:18090) with its PostgreSQL store, seeded from deploy/host/gateway.yaml; idempotent.
 # /etc/gw/env (root 0600) must hold OPENROUTER_API_KEY_1, GW_ADMIN_TOKEN and CB_BOXES_ADMIN_TOKEN; the admin tokens are also
 # written to /etc/gw/admin-token (install-gw-config) and /etc/cocoonbox/gw-admin-token (the api's tenant admin token).
-# Needs cb-host-net and install-pg first.
+# Needs cb-host-net, install-pg and install-redis first.
 # usage: sudo deploy/host/install-gw <gw binary>
 set -euo pipefail
 export LC_ALL=C
@@ -17,6 +17,7 @@ for k in OPENROUTER_API_KEY_1 GW_ADMIN_TOKEN CB_BOXES_ADMIN_TOKEN; do
 	[ -n "$(get "$k")" ] || { echo "$ENV sets no $k" >&2; exit 1; }
 done
 id gw >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin gw
+getent group redis >/dev/null && usermod -a -G redis gw
 install -m 0755 "$BIN" /usr/local/bin/gw
 install -d -m 0755 /etc/gw
 install -d -m 0700 /etc/cocoonbox

@@ -86,10 +86,24 @@ message HelloRequest {
 
 message HelloResponse {
   string agent_version = 1;
+  // The screen size the image boots at: 1280x800 on a desktop, 720x1280 on
+  // Android. A later change in the box, such as `wm size`, is not reflected.
   uint32 screen_width = 2;
   uint32 screen_height = 3;
   repeated string models = 4;
   string default_main_model = 5;
+  Automation automation = 6;
+}
+
+// Automation is what the box's screen is, from the guide its image holds.
+enum Automation {
+  AUTOMATION_UNSPECIFIED = 0;
+  // A desktop driven through cua-driver only.
+  AUTOMATION_PLAIN = 1;
+  // A desktop that runs GUI plans and scripts on the desk runtime.
+  AUTOMATION_DESK = 2;
+  // An Android phone in the box, driven through adb.
+  AUTOMATION_ANDROID = 3;
 }
 
 message ActiveOriginRequest {}

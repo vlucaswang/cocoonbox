@@ -38,6 +38,19 @@ func TestTheInterceptorsCarryTheTokensCredential(t *testing.T) {
 	}
 }
 
+func TestOnlyTheOperatorSocketMarksAnOperatorCall(t *testing.T) {
+	a := New(anyToken{}, noShares{})
+	operator := func(ctx context.Context, _ any) (any, error) { return Operator(ctx), nil }
+	got, err := a.Unary(metadata.NewIncomingContext(t.Context(), metadata.Pairs(HeaderAuthorization, "Bearer cb_0123", HeaderOperatorUser, "u-any")), nil, &grpc.UnaryServerInfo{}, operator)
+	if err != nil || got != false {
+		t.Errorf("a user call with the operator header: operator %v, %v", got, err)
+	}
+	got, err = OperatorUnary(metadata.NewIncomingContext(t.Context(), metadata.Pairs(HeaderOperatorUser, "u-any")), nil, &grpc.UnaryServerInfo{}, operator)
+	if err != nil || got != true {
+		t.Errorf("an operator socket call: operator %v, %v", got, err)
+	}
+}
+
 type anyToken struct{}
 
 func (anyToken) ByTokenSHA256(context.Context, string) (string, bool) { return "u-any", true }

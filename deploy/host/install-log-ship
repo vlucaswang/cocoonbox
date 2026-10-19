@@ -1,0 +1,12 @@
+#!/bin/sh
+# Installs the 5-minute shipping of sandboxd's audit and usage journals to the off-host log bucket; idempotent.
+# It writes through cb-s3 with the api's state-store credentials; install-disk-alert provides cb-alert.
+# usage: sudo deploy/host/install-log-ship
+set -eu
+SRC="$(cd "$(dirname "$0")" && pwd)"
+
+install -m 0755 "$SRC/cb-s3" "$SRC/cb-log-ship" /usr/local/sbin/
+install -m 0644 "$SRC/cb-log-ship.service" "$SRC/cb-log-ship.timer" /etc/systemd/system/
+systemctl daemon-reload
+systemctl start cb-log-ship.service
+systemctl enable --now cb-log-ship.timer >/dev/null

@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/loomhand/cocoonbox/api/auth"
 	agentv1 "github.com/loomhand/cocoonbox/api/gen/cocoonbox/agent/v1"
 	controlv1 "github.com/loomhand/cocoonbox/api/gen/cocoonbox/control/v1"
 	"github.com/loomhand/cocoonbox/api/machines"
@@ -33,7 +34,10 @@ func (s *Service) Rebase(ctx context.Context, req *controlv1.RebaseRequest) (*co
 	}
 	image := cmp.Or(req.GetImage(), s.defaults.upgrade(s.ownImage(user), m.Image))
 	if image != s.defaults.Image && !slices.Contains(s.defaults.RebaseImages, image) {
-		return nil, status.Errorf(codes.InvalidArgument, "image %q is not a rebase target", image)
+		return nil, status.Errorf(codes.InvalidArgument, "image %q is not a rebase target; choose %s", image, s.defaults.choices())
+	}
+	if familyOf(image) != familyOf(m.Image) && !auth.Operator(ctx) {
+		return nil, status.Errorf(codes.FailedPrecondition, "image %q is not of the box's family %s; only an operator moves a box to another family", image, familyOf(m.Image))
 	}
 	op, started := s.ops.start(context.WithoutCancel(ctx), user, box, controlv1.Phase_PHASE_SAVING, m.Revision, stateTimeout)
 	if started {

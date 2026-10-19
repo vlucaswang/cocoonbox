@@ -1,0 +1,31 @@
+#!/bin/bash
+# Installs Redis on a unix socket only, for gw's spend counters and limits (storage.redis_url
+# redis+unix:///run/redis/redis-server.sock), persisted with an append-only file; idempotent.
+# usage: sudo deploy/host/install-redis
+set -euo pipefail
+export LC_ALL=C DEBIAN_FRONTEND=noninteractive
+
+CONF=/etc/redis/redis.conf
+MARK="# cocoonbox: unix socket only, persisted counters"
+
+apt-get install -y -q redis-server >/dev/null
+if ! grep -qF "$MARK" "$CONF"; then
+	cat >> "$CONF" <<EOF
+
+$MARK
+port 0
+unixsocket /run/redis/redis-server.sock
+unixsocketperm 770
+appendonly yes
+appendfsync everysec
+maxmemory 256mb
+maxmemory-policy noeviction
+EOF
+fi
+if id gw >/dev/null 2>&1 && ! id -nG gw | grep -qw redis; then
+	usermod -a -G redis gw
+	systemctl try-restart gw
+fi
+systemctl enable redis-server >/dev/null
+systemctl restart redis-server
+redis-cli -s /run/redis/redis-server.sock ping

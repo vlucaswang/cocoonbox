@@ -107,10 +107,14 @@ type Credentials struct {
 	Prune string
 }
 
-// Endpoint reaches a machine's agent; Key names it as host:port and changes when the machine moves.
+// DialFunc opens a connection to one port of a machine.
+type DialFunc func(ctx context.Context) (net.Conn, error)
+
+// Endpoint reaches a machine's agent and its RFB server; Key names the agent as host:port and changes when the machine moves.
 type Endpoint struct {
-	Key  string
-	Dial func(ctx context.Context) (net.Conn, error)
+	Key    string
+	Dial   DialFunc
+	Screen DialFunc
 }
 
 // TCPEndpoint reaches an agent listening on addr.

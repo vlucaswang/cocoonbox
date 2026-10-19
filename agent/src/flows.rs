@@ -1,6 +1,7 @@
 //! Flow library sync of a box that runs GUI plans: the owner's saved flows reach every such box of the owner through the box door.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -31,6 +32,7 @@ pub struct Syncer {
     tools: Arc<dyn Tools>,
     kick: Notify,
     gate: tokio::sync::Mutex<()>,
+    stale_index: AtomicBool,
     /// Content the library refused, by name and SHA-256, so it is not sent again until it changes.
     refused: Mutex<HashMap<String, String>>,
 }
@@ -65,6 +67,7 @@ impl Syncer {
             tools,
             kick: Notify::new(),
             gate: tokio::sync::Mutex::new(()),
+            stale_index: AtomicBool::new(true),
             refused: Mutex::default(),
         })
     }
@@ -101,12 +104,19 @@ impl Syncer {
         });
     }
 
-    /// Brings the library's newer flows into the box, and every flow it lacks once its flows folder is gone or replaced, within a bounded time; a failure leaves the box's flows as they are.
+    /// Brings the library's newer flows into the box, and every flow it lacks once its flows folder is gone or replaced, within a bounded time; a failure leaves the box's flows as they are, and the index follows every flow a pull wrote, retried by the next pull until it succeeds.
     pub async fn pull(&self) {
         match tokio::time::timeout(PULL_BUDGET, self.try_pull()).await {
             Ok(Ok(())) => {}
             Ok(Err(e)) => eprintln!("flows: pull: {e}"),
             Err(_) => eprintln!("flows: pull: no answer in {PULL_BUDGET:?}"),
+        }
+        let _gate = self.gate.lock().await;
+        if self.stale_index.load(Ordering::SeqCst) {
+            match self.run("flows_index", json!({})).await {
+                Ok(_) => self.stale_index.store(false, Ordering::SeqCst),
+                Err(e) => eprintln!("flows: index: {e}"),
+            }
         }
     }
 
@@ -128,7 +138,6 @@ impl Syncer {
         let folder = self.mark().await?;
         let known = self.store.flow_folder().await?;
         let replaced = known.as_ref().map_or(folder.is_empty(), |id| *id != folder);
-        let mut changed = false;
         for remote in &library.flows {
             if !flows::valid(&remote.name) {
                 continue;
@@ -142,12 +151,14 @@ impl Syncer {
                 Some(sha) if row.is_none_or(|(_, synced)| synced != sha) => continue,
                 _ => {
                     let content = self.fetch(remote).await?;
+                    if remote.name.ends_with(".json") {
+                        self.stale_index.store(true, Ordering::SeqCst);
+                    }
                     self.run(
                         "flows_write",
                         json!({"name": remote.name, "content": content}),
                     )
                     .await?;
-                    changed |= remote.name.ends_with(".json");
                 }
             }
             self.store
@@ -157,13 +168,12 @@ impl Syncer {
         let held: HashSet<&str> = library.flows.iter().map(|r| r.name.as_str()).collect();
         for (name, (_, synced)) in rows.iter().filter(|(n, _)| !held.contains(n.as_str())) {
             if local.get(name) == Some(synced) {
+                if name.ends_with(".json") {
+                    self.stale_index.store(true, Ordering::SeqCst);
+                }
                 self.run("flows_remove", json!({"name": name})).await?;
-                changed |= name.ends_with(".json");
             }
             self.store.drop_flow_row(name.clone()).await?;
-        }
-        if changed {
-            self.run("flows_index", json!({})).await?;
         }
         let folder = if folder.is_empty() {
             self.mark().await?
@@ -506,6 +516,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_pull_past_its_budget_after_a_flow_landed_still_rebuilds_the_index() {
+        let door = Door::start().await;
+        door.put("save.json", "{\"v\":1}");
+        let b = Box_::new(&door);
+        b.tools.stall_write.store(true, Ordering::SeqCst);
+        b.sync.pull().await;
+        assert_eq!(b.file("save.json").as_deref(), Some("{\"v\":1}"));
+        assert_eq!(b.indexed(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_pull_cancelled_while_it_indexes_leaves_the_index_to_the_next_pull() {
+        let door = Door::start().await;
+        door.put("save.json", "{\"v\":1}");
+        let b = Box_::new(&door);
+        b.tools.stall_index.store(true, Ordering::SeqCst);
+        tokio::select! {
+            () = b.sync.pull() => panic!("the pull did not stall in flows_index"),
+            () = b.tools.index_started.notified() => {}
+        }
+        assert_eq!(b.file("save.json").as_deref(), Some("{\"v\":1}"));
+        assert_eq!(b.indexed(), 0);
+        b.sync.pull().await;
+        assert_eq!(b.indexed(), 1);
+        b.sync.pull().await;
+        assert_eq!(b.indexed(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_first_pull_after_a_start_reindexes_once_with_nothing_to_write() {
+        let door = Door::start().await;
+        let b = Box_::new(&door);
+        b.sync.pull().await;
+        b.sync.pull().await;
+        assert_eq!(b.indexed(), 1);
+    }
+
+    #[tokio::test]
     async fn an_unreachable_library_leaves_the_box_as_it_is() {
         let b = Box_::at("http://127.0.0.1:9/mcp");
         b.write("a.json", "{}");
@@ -534,6 +582,9 @@ mod tests {
             let tools = Arc::new(FileTools {
                 ws: ws.clone(),
                 indexed: AtomicUsize::new(0),
+                stall_write: AtomicBool::new(false),
+                stall_index: AtomicBool::new(false),
+                index_started: Notify::new(),
                 writes: tokio::sync::watch::channel(0).0,
             });
             tokio::spawn(toolhost::flows::watch(ws.clone(), tools.writes.clone()));
@@ -563,6 +614,9 @@ mod tests {
     struct FileTools {
         ws: PathBuf,
         indexed: AtomicUsize,
+        stall_write: AtomicBool,
+        stall_index: AtomicBool,
+        index_started: Notify,
         writes: tokio::sync::watch::Sender<u64>,
     }
 
@@ -573,11 +627,21 @@ mod tests {
             let out = match name {
                 "flows_scan" => toolhost::flows::scan(ws).await,
                 "flows_read" => toolhost::flows::read(ws, args).await,
-                "flows_write" => toolhost::flows::write(ws, args).await,
+                "flows_write" => {
+                    let written = toolhost::flows::write(ws, args).await;
+                    if self.stall_write.swap(false, Ordering::SeqCst) {
+                        tokio::time::sleep(PULL_BUDGET * 2).await;
+                    }
+                    written
+                }
                 "flows_remove" => toolhost::flows::remove(ws, args).await,
                 "flows_mark" => toolhost::flows::mark(ws, args).await,
                 "flows_wait" => toolhost::flows::wait(&self.writes, args).await,
                 "flows_index" => {
+                    self.index_started.notify_one();
+                    if self.stall_index.swap(false, Ordering::SeqCst) {
+                        tokio::time::sleep(PULL_BUDGET * 2).await;
+                    }
                     self.indexed.fetch_add(1, Ordering::SeqCst);
                     Ok("{}".to_owned())
                 }

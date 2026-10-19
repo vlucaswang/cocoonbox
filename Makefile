@@ -1,17 +1,14 @@
-.PHONY: all api agent desk-core deskhost macos app image gate help
+.PHONY: all api agent deskhost macos app image gate help
 
 MACOS_TEST_ARGS ?=
 
-all: gate api agent desk-core ## Gates that run on Linux: clean gate, api, agent, desk-core
+all: gate api agent ## Gates that run on Linux: clean gate, api, agent
 
 api: ## api: fmt check, lint, test, build
 	$(MAKE) -C api fmt-check lint test build
 
 agent: ## agent: fmt check, clippy -D warnings, test (CB_NO_BROWSER=1 skips the Chrome tests)
 	cd agent && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked
-
-desk-core: ## desk-core: fmt check, clippy -D warnings, test
-	cd desk-core && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked
 
 deskhost: ## deskhost: fmt check, clippy -D warnings, test (macOS or Windows)
 	cd deskhost && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked

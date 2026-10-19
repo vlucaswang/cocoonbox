@@ -69,7 +69,7 @@ struct ScreenStatusBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "display")
+            Image(systemName: model.wording.symbol)
             Text("Agent Computer").font(.callout.bold())
             if model.screen.framebufferSize.width > 0 {
                 Text("\(Int(model.screen.framebufferSize.width))×\(Int(model.screen.framebufferSize.height))")

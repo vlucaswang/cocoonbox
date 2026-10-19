@@ -10,6 +10,7 @@ WorkingDirectory=/workspace
 Environment=HOME=/home/user
 Environment=LANG=en_US.UTF-8
 Environment=ANDROID_SERIAL=127.0.0.1:5555
+Environment=TOOLHOST_SOCKET=/run/cocoonbox/toolhost.sock
 ExecStart=/usr/local/bin/cocoonbox-agent toolhost
 Restart=always
 RestartSec=2s

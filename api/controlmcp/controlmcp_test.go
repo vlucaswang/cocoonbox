@@ -203,14 +203,23 @@ func TestToolsActOnlyOnCallersBox(t *testing.T) {
 	}
 }
 
-func TestBoxCreateTakesTheDefaultImage(t *testing.T) {
+func TestBoxCreatePassesTheImage(t *testing.T) {
 	srv, fake := newTestServer(t)
-	structured(t, post(t, srv, aliceToken, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"box_create","arguments":{"name":"plain"}}}`))
-	fake.mu.Lock()
-	got := fake.extra["alice"][len(fake.extra["alice"])-1]
-	fake.mu.Unlock()
-	if got.GetName() != "plain" || got.GetImage() != "" {
-		t.Errorf("box_create created %v, want the default image", got)
+	for _, tt := range []struct{ args, image string }{
+		{`{"name":"plain"}`, ""},
+		{`{"name":"phone","image":"cbdroid"}`, "cbdroid"},
+	} {
+		structured(t, post(t, srv, aliceToken, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"box_create","arguments":`+tt.args+`}}`))
+		fake.mu.Lock()
+		got := fake.extra["alice"][len(fake.extra["alice"])-1]
+		fake.mu.Unlock()
+		if got.GetImage() != tt.image {
+			t.Errorf("box_create %s created %v, want image %q", tt.args, got, tt.image)
+		}
+	}
+	resp := post(t, srv, aliceToken, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"box_create","arguments":{"name":"x","image":"nosuch"}}}`)
+	if got := refusal(t, resp); got != `image "nosuch" is not offered` {
+		t.Errorf("box_create of an image not offered = %q", got)
 	}
 }
 
@@ -422,6 +431,9 @@ func (f *fakeBoxes) List(ctx context.Context, _ *controlv1.ListBoxesRequest) (*c
 func (f *fakeBoxes) Create(ctx context.Context, req *controlv1.CreateBoxRequest) (*controlv1.EnsureResponse, error) {
 	user := auth.User(ctx)
 	f.record("Create", user, req.GetName())
+	if req.GetImage() == "nosuch" {
+		return nil, status.Errorf(codes.InvalidArgument, "image %q is not offered", req.GetImage())
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	box := &controlv1.Box{Id: "cb-" + req.GetName(), Name: req.GetName(), State: controlv1.BoxState_BOX_STATE_STARTING, Image: req.GetImage()}

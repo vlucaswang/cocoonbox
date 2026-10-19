@@ -62,7 +62,7 @@ func TestAnIdleUserBoxStaysUpWhileSomethingKeepsIt(t *testing.T) {
 func TestAWedgedAgentDoesNotStallTheSweepForTheNextBox(t *testing.T) {
 	env, clock := newUserIdleEnv(t)
 	bobBox := BoxID(bob)
-	env.fake.put(machines.Machine{ID: bobBox, Owner: bob, State: machines.StateRunning, Flavor: defaultFlavor, Image: "desktop-v1", Revision: 1})
+	env.fake.put(machines.Machine{ID: bobBox, Owner: bob, State: machines.StateRunning, Flavor: defaultFlavor, Image: "desktop:v1", Revision: 1})
 	hung, next := min(aliceBox, bobBox), max(aliceBox, bobBox)
 	env.svc.activity.(*fakeActivity).hang = hung
 	env.svc.idle.probe = 50 * time.Millisecond

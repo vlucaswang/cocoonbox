@@ -1,0 +1,6 @@
+[Unit]
+Description=Journal a daily summary of cb-alert alerts
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cb-alert --digest

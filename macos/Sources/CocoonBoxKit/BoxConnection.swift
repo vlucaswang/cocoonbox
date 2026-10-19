@@ -113,10 +113,10 @@ public final class BoxConnection: Sendable {
         return list
     }
 
-    // watchBoxes runs Boxes.Watch until cancelled; onBoxes gets the user's boxes, oldest first, at once, after each
-    // change by any client or the api, and again after each reconnect.
+    // watchBoxes runs Boxes.Watch until cancelled; onBoxes gets the user's boxes, oldest first, and the offered images,
+    // at once, after each change by any client or the api, and again after each reconnect.
     public func watchBoxes(
-        onBoxes: @escaping @Sendable ([Cocoonbox_Control_V1_Box]) async -> Void,
+        onBoxes: @escaping @Sendable ([Cocoonbox_Control_V1_Box], [String]) async -> Void,
         onDisconnect: @escaping @Sendable (any Error) async -> Void
     ) async {
         let boxes = boxes
@@ -133,7 +133,7 @@ public final class BoxConnection: Sendable {
                 self.names.withLock { names in
                     for box in list.boxes { names[box.id] = box.name }
                 }
-                await onBoxes(list.boxes)
+                await onBoxes(list.boxes, list.offeredImages)
             },
             onResync: {},
             onDisconnect: onDisconnect

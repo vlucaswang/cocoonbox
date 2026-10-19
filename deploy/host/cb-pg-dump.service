@@ -1,9 +1,8 @@
 [Unit]
-Description=cocoonbox nightly PostgreSQL dump
-After=postgresql.service
+Description=cocoonbox PostgreSQL dump, encrypted off the host
+After=postgresql.service network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=postgres
-Group=postgres
 ExecStart=/usr/local/sbin/cb-pg-dump

@@ -28,7 +28,7 @@ toolhost: shell · files · CDP browser · cua-driver
 | File | Role |
 |---|---|
 | `server.rs` | gRPC services behind the edge check of `identity.rs` |
-| `identity.rs` | Box identity from `/run/cocoonbox-identity/identity` and the `x-cocoonbox-credential` check; the edge token only while that file is absent |
+| `identity.rs` | Box identity from `/run/cocoonbox-identity/identity` and the `x-cocoonbox-credential` check |
 | `dispatch.rs` | The one tool path: `Tools` interface, `Dispatcher` (record call and result, ComputerAction, driver-session injection) |
 | `journal.rs` | Store plus event bus: every transcript and status write is persisted, then published |
 | `runner.rs` | Per-agent turn queue, the main agent loop, take-over approvals, cancel |
@@ -96,19 +96,22 @@ External agents, such as local coding agents, use the box through `POST|GET|DELE
 
 ## Environment
 
-These keys come from `/etc/cocoonbox/agent.env` (see `docs/contracts.md`): `GW_BASE_URL`, `GW_API_KEY`, `MODEL_MAIN`, `MODEL_COMPUTER`, `AGENT_LISTEN`, and `EDGE_TOKEN` while boxes switch to credentials.
+These keys come from `/etc/cocoonbox/agent.env` (see `docs/contracts.md`): `GW_BASE_URL`, `GW_API_KEY`, `MODEL_MAIN`, `MODEL_COMPUTER` and `AGENT_LISTEN`.
 
-Optional overrides with contract defaults, used by tests:
+Optional overrides with contract defaults, used by tests and non-standard layouts. Boxes set none of them; the identity pair moves the trust anchor, so only whoever writes the agent's environment, already root, can change it:
 
 | Key | Default |
 |---|---|
 | `CB_STATE_DIR` | `/var/lib/cocoonbox` |
+| `CB_IDENTITY_PATH` | `/run/cocoonbox-identity/identity` |
+| `CB_IDENTITY_OWNER` | `0` (root): the uid that must own the identity file and its directory |
 | `TOOLHOST_SOCKET` | `/run/cocoonbox/toolhost.sock` |
 | `VNC_ADDR` | `127.0.0.1:5900` |
 | `CB_WORKSPACE` | `/workspace` |
 | `CHROME_BIN` | `google-chrome` |
 | `CHROME_PROFILE` | `~/.config/cocoonbox-chrome` |
 | `CUA_DRIVER_SOCKET` | `~/.cache/cua-driver/cua-driver.sock` |
+| `SHUTTLE_SOCKET` | unset; when set, shuttle's desk endpoint, which answers the toolhost's desk verbs, model calls and runs |
 | `GW_ANTHROPIC_WIRE` | `chat` (`messages` switches `anthropic/` models to `/v1/messages`) |
 
 ## Build

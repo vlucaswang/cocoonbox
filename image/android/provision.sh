@@ -11,13 +11,13 @@ ARCH=$(dpkg --print-architecture)
 case $ARCH in
 amd64)
 	NODE_ARCH=x64 NODE_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
-	SCRCPY_RFB="scrcpy-rfb-linux-amd64 30e287c466a19a1092b085d14af15cd9d73aae01ca75c436d491f5254547a641"
-	SU1000="su1000-linux-amd64 cac34bdbdb04c300c9ebd098dbb6c3e72abf18ee21427e578ba9f6f373d98643"
+	SCRCPY_RFB="scrcpy-rfb-linux-amd64 c54fef8d5fd6b95e2cd595a54d89b7f34e85de0ab3137e4965936c3850ddb28f"
+	SU1000="su1000-linux-amd64 d1e3681254937afa319fcd43702ac53a2290c01b9e3b1fa750195a66e149d2ed"
 	;;
 arm64)
 	NODE_ARCH=arm64 NODE_SHA256=6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2
-	SCRCPY_RFB="scrcpy-rfb-linux-arm64 86d9a9dd055a607aee797a933803213f8c7426f9e1115db5cee3c85a9a2af2f7"
-	SU1000="su1000-linux-arm64 8a6446a2bb9f506d8d6099ca8515bdd009f00827c8d71ba57d2717f166d30b32"
+	SCRCPY_RFB="scrcpy-rfb-linux-arm64 dab2f1fe80935ad98ed5f0d3b77dc6a693d2feb6e1533e4cf909cde204f8706d"
+	SU1000="su1000-linux-arm64 72ca7905078089d4328a40267575ba258036ca20304844e3272ffff927a48c66"
 	;;
 *) echo "unsupported architecture $ARCH" >&2; exit 1 ;;
 esac
@@ -26,12 +26,13 @@ NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TARBALL}"
 DESK=$(cd "$(dirname "$0")/../desk/rootfs" && pwd)
 # the gw endpoint of the agent's contract (export-rootfs.sh), for the plan executor and scripts
 GW_BASE_URL=http://10.203.0.1:18090/v1
-# cocoonstack/scrcpy-rfb master release at 9bdf6ed2b50953589ef153c18f087bcaafc429d9
-SCRCPY_URL=https://github.com/cocoonstack/scrcpy-rfb/releases/download/master
+# cocoonstack/scrcpy-rfb commit-tagged release master-827baf531 (tag protected by ruleset; 827baf531715d6b86482c7ac6c63fd31030c58aa, run 39217674630); the jar run as shell is vanilla scrcpy 4.1
+SCRCPY_URL=https://github.com/cocoonstack/scrcpy-rfb/releases/download/master-827baf531
 SCRCPY_FILES=(
 	"$SCRCPY_RFB /usr/local/bin/scrcpy-rfb 0755"
 	"$SU1000 /usr/local/share/scrcpy/su1000 0755"
-	"scrcpy-server-secure.jar 90fe59bd9cfa24b1f6a1dcbe844b1ee306b0c5f33f6f306a0d3676847aa32608 /usr/local/share/scrcpy/scrcpy-server.jar 0644"
+	"scrcpy-server-secure.jar 8f027776c89888d2fe5cab5be4bfd1a460119d210054ce21b2f6bf53f1fe820e /usr/local/share/scrcpy/scrcpy-server.jar 0644"
+	"scrcpy-server.jar deacb991ed2509715160ffdc7907e47b4160eb30d1566217e9047fd5b8850cae /usr/local/share/scrcpy/scrcpy-server-shell.jar 0644"
 )
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
@@ -133,8 +134,12 @@ setup_desk() {
 		rm -rf "$tmp"
 	fi
 	for b in node npm npx; do ln -sfn "$dir/bin/$b" "/usr/local/bin/$b"; done
-	install -D -m 0644 "$DESK/opt/desk/lib/desk.mts" /opt/desk/lib/desk.mts
-	install -D -m 0644 "$DESK/opt/desk/lib/gui_plan.mts" /opt/desk/lib/gui_plan.mts
+	# shellcheck source=image/desk/shuttle.sh
+	. "$DESK/../shuttle.sh"
+	tmp=$(mktemp -d)
+	curl -fsSL "$SHUTTLE_URL" -o "$tmp/$SHUTTLE_TARBALL"
+	install_shuttle_runtime "$tmp/$SHUTTLE_TARBALL"
+	rm -rf "$tmp"
 	install -D -m 0755 "$DESK/usr/local/bin/desk" /usr/local/bin/desk
 	install -d /etc/cocoonbox
 	printf 'GW_BASE_URL=%s\n' "$GW_BASE_URL" > /etc/cocoonbox/desk.env

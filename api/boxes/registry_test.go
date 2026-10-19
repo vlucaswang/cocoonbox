@@ -127,8 +127,9 @@ func TestCreateResolvesAnImageFamily(t *testing.T) {
 	}
 	noCore := testDefaults
 	noCore.Image, noCore.RebaseImages = "cbdesk:v25", []string{"cbdesk:v24"}
-	if _, err := New(newFakeMachines(), noCore, newFakeRegistry()).Create(auth.WithUser(t.Context(), alice), &controlv1.CreateBoxRequest{Name: "kind", Image: "cbcore"}); status.Code(err) != codes.InvalidArgument {
-		t.Errorf("Create(cbcore) with no cbcore image offered = %v, want InvalidArgument", err)
+	_, err := New(newFakeMachines(), noCore, newFakeRegistry()).Create(auth.WithUser(t.Context(), alice), &controlv1.CreateBoxRequest{Name: "kind", Image: "cbcore"})
+	if want := `image "cbcore" is not offered; choose cbdesk:v25, cbdesk:v24, or the family of one (the name before the tag's ':' after the last '/')`; status.Code(err) != codes.InvalidArgument || status.Convert(err).Message() != want {
+		t.Errorf("Create(cbcore) with no cbcore image offered = %v, want InvalidArgument %q", err, want)
 	}
 }
 
@@ -141,7 +142,7 @@ func TestCreateRefusals(t *testing.T) {
 		want codes.Code
 	}{
 		{&controlv1.CreateBoxRequest{Name: "main"}, codes.AlreadyExists},
-		{&controlv1.CreateBoxRequest{Name: "x", Image: "desktop-v9"}, codes.InvalidArgument},
+		{&controlv1.CreateBoxRequest{Name: "x", Image: "desktop:v9"}, codes.InvalidArgument},
 		{&controlv1.CreateBoxRequest{Name: "x", Flavor: &controlv1.Flavor{Vcpus: 64}}, codes.InvalidArgument},
 	} {
 		if _, err := svc.Create(ctx, tt.req); status.Code(err) != tt.want {
@@ -149,11 +150,11 @@ func TestCreateRefusals(t *testing.T) {
 		}
 	}
 	for i, name := range []string{"two", "three"} {
-		created, err := svc.Create(ctx, &controlv1.CreateBoxRequest{Name: name, Image: "desktop-v3"})
+		created, err := svc.Create(ctx, &controlv1.CreateBoxRequest{Name: name, Image: "desktop:v3"})
 		if err != nil {
 			t.Fatalf("Create %s: %v", name, err)
 		}
-		if fake.lastSpec().Image != "desktop-v3" {
+		if fake.lastSpec().Image != "desktop:v3" {
 			t.Errorf("spec image = %q", fake.lastSpec().Image)
 		}
 		fake.put(machines.Machine{ID: created.GetBox().GetId(), Owner: alice, State: machines.StateHibernated, Revision: int64(i + 2)})

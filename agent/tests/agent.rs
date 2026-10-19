@@ -1,5 +1,7 @@
 #![cfg(test)]
 
+mod common;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -7,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::Engine;
-use base64::engine::general_purpose::{STANDARD as B64, URL_SAFE_NO_PAD};
+use base64::engine::general_purpose::STANDARD as B64;
 use cocoonbox_agent::config::{Automation, ServeConfig, ToolhostConfig};
 use cocoonbox_agent::pb::agents_client::AgentsClient;
 use cocoonbox_agent::pb::session_client::SessionClient;
@@ -17,7 +19,7 @@ use cocoonbox_agent::pb::{
 use cocoonbox_agent::runner::Runtime;
 use cocoonbox_agent::toolhost::state::Root;
 use cocoonbox_agent::{offload, server, toolhost};
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::SigningKey;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -28,7 +30,8 @@ use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
 use tonic::{Code, Request};
 
-const TOKEN: &str = "edge-token-for-tests";
+use common::{owner, sign_credential, write_identity};
+
 const FAKE_NODE: &str = r#"src=$(cat "$CB_SCRIPT")
 case "$src" in
 *boom*) echo "Error: boom" >&2; exit 1 ;;
@@ -192,6 +195,7 @@ impl Harness {
         let home = dir.path().join("home");
         std::fs::create_dir_all(&home).unwrap();
         let identity = dir.path().join("identity").join("identity");
+        common::provision(&identity);
         let gw_log = Log::default();
         let gw = mock_gw(script, Arc::clone(&gw_log)).await;
         let cua_log = Log::default();
@@ -250,6 +254,8 @@ impl Harness {
             automation,
             plugins: plugins.clone(),
             adb_bin,
+            gw_base_url: None,
+            shuttle_socket: None,
         };
         tokio::spawn(async move { toolhost::run(th_cfg).await });
         let cfg = ServeConfig {
@@ -257,7 +263,6 @@ impl Harness {
             gw_api_key: "k".into(),
             model_main: "deepseek/deepseek-v4.1-flash".into(),
             model_computer: "anthropic/claude-sonnet-5".into(),
-            edge_token: Some(TOKEN.into()),
             identity_path: identity.clone(),
             identity_owner: std::os::unix::fs::MetadataExt::uid(&dir.path().metadata().unwrap()),
             listen: "127.0.0.1:0".parse().unwrap(),
@@ -339,8 +344,10 @@ impl Harness {
 
 fn authed<T>(msg: T) -> Request<T> {
     let mut req = Request::new(msg);
-    req.metadata_mut()
-        .insert("x-cocoonbox-edge-token", MetadataValue::from_static(TOKEN));
+    req.metadata_mut().insert(
+        "x-cocoonbox-credential",
+        MetadataValue::from_static(owner()),
+    );
     req
 }
 
@@ -927,33 +934,9 @@ async fn wait_gone(pid_file: &Path) -> bool {
     false
 }
 
-fn write_identity(path: &Path, key: &SigningKey, wake_id: &str) -> String {
-    let public_key = key.verifying_key().to_bytes();
-    let key_id = hex::encode(Sha256::digest(public_key))[..16].to_owned();
-    let dir = path.parent().unwrap();
-    std::fs::create_dir_all(dir).unwrap();
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let identity = json!({
-        "box_id": "cb-box",
-        "wake_id": wake_id,
-        "key_id": key_id,
-        "public_key": URL_SAFE_NO_PAD.encode(public_key),
-    });
-    std::fs::write(dir.join("tmp"), identity.to_string()).unwrap();
-    std::fs::set_permissions(dir.join("tmp"), std::fs::Permissions::from_mode(0o644)).unwrap();
-    std::fs::rename(dir.join("tmp"), path).unwrap();
-    key_id
-}
-
 fn credential(key: &SigningKey, key_id: &str, box_id: &str, wake_id: &str) -> String {
     let exp = cocoonbox_agent::now_ms() / 1000 + 600;
     sign_credential(key, "v1", &format!("{key_id}|{box_id}|{wake_id}|{exp}"))
-}
-
-fn sign_credential(key: &SigningKey, version: &str, fields: &str) -> String {
-    let signed = format!("{version}.{}", URL_SAFE_NO_PAD.encode(fields));
-    let sig = URL_SAFE_NO_PAD.encode(key.sign(signed.as_bytes()).to_bytes());
-    format!("{signed}.{sig}")
 }
 
 /// The box identity of a harness and the credentials the edge would sign for it.
@@ -987,16 +970,12 @@ fn signed<T>(msg: T, credential: &str) -> Request<T> {
     req
 }
 
-async fn surface_codes(h: &Harness, credential: Option<&str>, token: Option<&str>) -> Vec<String> {
-    fn with<T>(msg: T, credential: Option<&str>, token: Option<&str>) -> Request<T> {
+async fn surface_codes(h: &Harness, credential: Option<&str>) -> Vec<String> {
+    fn with<T>(msg: T, credential: Option<&str>) -> Request<T> {
         let mut req = Request::new(msg);
         if let Some(c) = credential {
             req.metadata_mut()
                 .insert("x-cocoonbox-credential", c.parse().unwrap());
-        }
-        if let Some(t) = token {
-            req.metadata_mut()
-                .insert("x-cocoonbox-edge-token", t.parse().unwrap());
         }
         req
     }
@@ -1006,25 +985,22 @@ async fn surface_codes(h: &Harness, credential: Option<&str>, token: Option<&str
     let agents = h
         .agents()
         .await
-        .list(with(pb::ListAgentsRequest {}, credential, token))
+        .list(with(pb::ListAgentsRequest {}, credential))
         .await;
     let hello = h
         .session()
         .await
-        .hello(with(pb::HelloRequest::default(), credential, token))
+        .hello(with(pb::HelloRequest::default(), credential))
         .await;
     let plan = state_client(h)
         .await
-        .plan(with(pb::PlanRequest::default(), credential, token))
+        .plan(with(pb::PlanRequest::default(), credential))
         .await;
     let mut mcp = reqwest::Client::new()
         .post(format!("{}/mcp", h.endpoint))
         .json(&json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}));
     if let Some(c) = credential {
         mcp = mcp.header("x-cocoonbox-credential", c);
-    }
-    if let Some(t) = token {
-        mcp = mcp.header("x-cocoonbox-edge-token", t);
     }
     let mcp = mcp.send().await.unwrap().status().as_u16();
     vec![code(agents), code(hello), code(plan), mcp.to_string()]
@@ -1041,35 +1017,32 @@ async fn credential_guards_every_surface() {
         "401",
     ];
     let unavailable = ["Unavailable", "Unavailable", "Unavailable", "503"];
-    assert_eq!(surface_codes(&h, None, Some(TOKEN)).await, admitted);
+    assert_eq!(surface_codes(&h, Some(owner())).await, admitted);
+    assert_eq!(surface_codes(&h, None).await, refused);
 
     let key = SigningKey::from_bytes(&[5; 32]);
     let key_id = write_identity(&h.identity, &key, "w1");
     let good = credential(&key, &key_id, "cb-box", "w1");
-    assert_eq!(surface_codes(&h, Some(&good), None).await, admitted);
-    assert_eq!(surface_codes(&h, None, Some(TOKEN)).await, refused);
+    assert_eq!(surface_codes(&h, Some(&good)).await, admitted);
     let other_box = credential(&key, &key_id, "cb-other", "w1");
-    assert_eq!(surface_codes(&h, Some(&other_box), None).await, refused);
+    assert_eq!(surface_codes(&h, Some(&other_box)).await, refused);
     let forged = credential(&SigningKey::from_bytes(&[6; 32]), &key_id, "cb-box", "w1");
-    assert_eq!(surface_codes(&h, Some(&forged), Some(TOKEN)).await, refused);
+    assert_eq!(surface_codes(&h, Some(&forged)).await, refused);
 
     write_identity(&h.identity, &key, "w2");
     let woken = credential(&key, &key_id, "cb-box", "w2");
-    assert_eq!(surface_codes(&h, Some(&woken), None).await, admitted);
-    assert_eq!(surface_codes(&h, Some(&good), None).await, refused);
+    assert_eq!(surface_codes(&h, Some(&woken)).await, admitted);
+    assert_eq!(surface_codes(&h, Some(&good)).await, refused);
 
     let attacker = SigningKey::from_bytes(&[8; 32]);
     let swapped = write_identity(&h.identity, &attacker, "w2");
     std::fs::set_permissions(&h.identity, std::fs::Permissions::from_mode(0o666)).unwrap();
     let self_signed = credential(&attacker, &swapped, "cb-box", "w2");
-    assert_eq!(
-        surface_codes(&h, Some(&self_signed), Some(TOKEN)).await,
-        unavailable
-    );
+    assert_eq!(surface_codes(&h, Some(&self_signed)).await, unavailable);
 }
 
 #[tokio::test]
-async fn edge_token_is_required() {
+async fn credential_is_required() {
     let h = Harness::start(Vec::new(), false).await;
     let mut agents = h.agents().await;
     let err = agents
@@ -1079,8 +1052,8 @@ async fn edge_token_is_required() {
     assert_eq!(err.code(), Code::Unauthenticated);
     let mut wrong = Request::new(pb::ListAgentsRequest {});
     wrong.metadata_mut().insert(
-        "x-cocoonbox-edge-token",
-        MetadataValue::from_static("edge-token-for-testX"),
+        "x-cocoonbox-credential",
+        MetadataValue::from_static("v1.YQ.YQ"),
     );
     assert_eq!(
         agents.list(wrong).await.unwrap_err().code(),
@@ -2819,7 +2792,7 @@ async fn exec_with_tty_runs_on_a_terminal_of_the_given_size() {
         .unwrap()
         .into_inner();
     let mut seen = Vec::new();
-    while !String::from_utf8_lossy(&seen).contains("30 100") {
+    while !String::from_utf8_lossy(&seen).contains("30 100\r\n") {
         match frames.message().await.unwrap().unwrap().body.unwrap() {
             exec_server_frame::Body::Stdout(d) => seen.extend_from_slice(&d),
             other => panic!("unexpected frame before the size: {other:?}"),
@@ -3244,7 +3217,7 @@ struct McpClient {
     url: String,
     session: String,
     next_id: u64,
-    /// The edge credential each request carries; `None` sends the edge token, as the owner.
+    /// The edge credential each request carries; `None` sends the owner's.
     credential: Option<String>,
 }
 
@@ -3298,7 +3271,7 @@ impl McpClient {
     fn authorize(&self, mut req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         req = match &self.credential {
             Some(c) => req.header("x-cocoonbox-credential", c),
-            None => req.header("x-cocoonbox-edge-token", TOKEN),
+            None => req.header("x-cocoonbox-credential", owner()),
         };
         if !self.session.is_empty() {
             req = req.header("mcp-session-id", &self.session);
@@ -3453,7 +3426,7 @@ async fn mcp_owner_sessions_drive_every_tool_untracked() {
 
     let discover = reqwest::Client::new()
         .post(format!("{}/mcp", h.endpoint))
-        .header("x-cocoonbox-edge-token", TOKEN)
+        .header("x-cocoonbox-credential", owner())
         .json(&json!({"jsonrpc": "2.0", "id": 8, "method": "server/discover", "params": {}}))
         .send()
         .await
@@ -3467,7 +3440,7 @@ async fn mcp_owner_sessions_drive_every_tool_untracked() {
 
     let no_session = reqwest::Client::new()
         .post(format!("{}/mcp", h.endpoint))
-        .header("x-cocoonbox-edge-token", TOKEN)
+        .header("x-cocoonbox-credential", owner())
         .json(&json!({"jsonrpc": "2.0", "id": 9, "method": "tools/list"}))
         .send()
         .await
@@ -3478,7 +3451,7 @@ async fn mcp_owner_sessions_drive_every_tool_untracked() {
     assert!(alive(&job));
     let deleted = http
         .delete(format!("{}/mcp", h.endpoint))
-        .header("x-cocoonbox-edge-token", TOKEN)
+        .header("x-cocoonbox-credential", owner())
         .header("mcp-session-id", &mcp.session)
         .send()
         .await
@@ -3506,7 +3479,7 @@ async fn mcp_surface_of_a_plain_box_matches_the_cbdesk_agent_byte_for_byte() {
         let mut req = http
             .post(&url)
             .header("accept", "application/json, text/event-stream")
-            .header("x-cocoonbox-edge-token", TOKEN)
+            .header("x-cocoonbox-credential", owner())
             .json(&body);
         if let Some(s) = session {
             req = req.header("mcp-session-id", s);
@@ -3546,7 +3519,7 @@ async fn mcp_surface_of_a_plain_box_matches_the_cbdesk_agent_byte_for_byte() {
         assert_eq!(
             String::from_utf8_lossy(&body),
             String::from_utf8_lossy(&want),
-            "{file} differs from agent 7c3c59a"
+            "{file} differs from the golden surface"
         );
     }
 }
@@ -3663,37 +3636,113 @@ async fn mcp_lists_a_plugin_after_the_script_tool_with_its_resource() {
 }
 
 #[tokio::test]
-async fn a_plain_box_ignores_its_plugins() {
+async fn a_box_without_the_desk_ignores_its_plugins() {
     let day = Duration::from_secs(24 * 3600);
-    let h = Harness::boot(
-        Vec::new(),
-        false,
-        Duration::from_secs(600),
-        day,
-        None,
-        None,
-        Automation::Plain,
-        true,
-    )
-    .await;
-    let mut mcp = McpClient::connect(&h).await;
-
-    let listed = mcp.rpc("tools/list", json!({})).await;
-    let names: Vec<&str> = listed["result"]["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|t| t["name"].as_str().unwrap())
-        .collect();
-    assert!(!names.contains(&"demo_run"), "{names:?}");
-    let out = mcp
-        .rpc(
-            "tools/call",
-            json!({"name": "demo_run", "arguments": {"code": "1"}}),
+    for automation in [Automation::Plain, Automation::Android] {
+        let h = Harness::boot(
+            Vec::new(),
+            false,
+            Duration::from_secs(600),
+            day,
+            None,
+            None,
+            automation,
+            true,
         )
         .await;
-    assert_eq!(out["error"]["message"], "unknown tool: demo_run", "{out}");
-    assert!(!h.workspace.join("plugin.log").exists());
+        let mut mcp = McpClient::connect(&h).await;
+
+        let listed = mcp.rpc("tools/list", json!({})).await;
+        let names: Vec<&str> = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert!(!names.contains(&"demo_run"), "{automation:?}: {names:?}");
+        let resources = mcp.rpc("resources/list", json!({})).await;
+        assert!(
+            !resources.to_string().contains("cocoonbox://demo/"),
+            "{automation:?}: {resources}"
+        );
+        let out = mcp
+            .rpc(
+                "tools/call",
+                json!({"name": "demo_run", "arguments": {"code": "1"}}),
+            )
+            .await;
+        assert_eq!(
+            out["error"]["message"], "unknown tool: demo_run",
+            "{automation:?}: {out}"
+        );
+        assert!(!h.workspace.join("plugin.log").exists(), "{automation:?}");
+    }
+}
+
+#[tokio::test]
+async fn an_android_box_keeps_its_mcp_texts_within_the_caps() {
+    let h = Harness::with_android().await;
+    let init: Value = reqwest::Client::new()
+        .post(format!("{}/mcp", h.endpoint))
+        .header("accept", "application/json, text/event-stream")
+        .header("x-cocoonbox-credential", owner())
+        .json(&json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let instructions = init["result"]["instructions"].as_str().unwrap();
+    assert!(
+        instructions.chars().count() <= 1600,
+        "{} chars: the bridge prefix must keep the total under Claude Code's 2048 cap",
+        instructions.chars().count()
+    );
+    let mut mcp = McpClient::connect(&h).await;
+    let listed = mcp.rpc("tools/list", json!({})).await;
+    for tool in listed["result"]["tools"].as_array().unwrap() {
+        assert!(
+            tool["description"].as_str().unwrap().chars().count() <= 2048,
+            "{}: Claude Code cuts a description at 2048 characters",
+            tool["name"]
+        );
+    }
+}
+
+#[tokio::test]
+async fn hello_names_the_box_automation_and_its_screen() {
+    for (h, automation, screen) in [
+        (
+            Harness::start(Vec::new(), false).await,
+            pb::Automation::Plain,
+            (1280, 800),
+        ),
+        (
+            Harness::with_desk(Vec::new()).await,
+            pb::Automation::Desk,
+            (1280, 800),
+        ),
+        (
+            Harness::with_android().await,
+            pb::Automation::Android,
+            (720, 1280),
+        ),
+    ] {
+        let hello = h
+            .session()
+            .await
+            .hello(authed(pb::HelloRequest::default()))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(hello.automation(), automation);
+        assert_eq!(
+            (hello.screen_width, hello.screen_height),
+            screen,
+            "{automation:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -3702,7 +3751,7 @@ async fn mcp_on_an_android_box_drives_the_phone_through_adb() {
     let init: Value = reqwest::Client::new()
         .post(format!("{}/mcp", h.endpoint))
         .header("accept", "application/json, text/event-stream")
-        .header("x-cocoonbox-edge-token", TOKEN)
+        .header("x-cocoonbox-credential", owner())
         .json(&json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}}))
         .send()
         .await
@@ -3770,7 +3819,7 @@ async fn a_plugin_box_keeps_its_mcp_instructions_within_the_cap() {
     let init: Value = reqwest::Client::new()
         .post(format!("{}/mcp", h.endpoint))
         .header("accept", "application/json, text/event-stream")
-        .header("x-cocoonbox-edge-token", TOKEN)
+        .header("x-cocoonbox-credential", owner())
         .json(&json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}}))
         .send()
         .await
@@ -4156,7 +4205,7 @@ async fn a_desk_box_gives_its_loop_and_its_mcp_clients_script_run_and_the_routin
     let init: Value = reqwest::Client::new()
         .post(format!("{}/mcp", h.endpoint))
         .header("accept", "application/json, text/event-stream")
-        .header("x-cocoonbox-edge-token", TOKEN)
+        .header("x-cocoonbox-credential", owner())
         .json(&json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}}))
         .send()
         .await
@@ -4705,7 +4754,7 @@ async fn a_share_principal_holds_at_most_four_open_sessions() {
 }
 
 #[tokio::test]
-async fn a_read_share_of_a_desk_box_does_not_read_its_saved_flows() {
+async fn a_read_share_of_a_desk_or_android_box_does_not_read_its_saved_flows() {
     let h = Harness::with_desk(Vec::new()).await;
     let edge = Edge::provision(&h);
     std::fs::create_dir_all(h.workspace.join("flows")).unwrap();
@@ -4733,6 +4782,19 @@ async fn a_read_share_of_a_desk_box_does_not_read_its_saved_flows() {
         .call("read_file", json!({"path": "flows/save.json"}))
         .await;
     assert!(text(&out).contains("typed"), "{out}");
+
+    let android = Harness::with_android().await;
+    let edge = Edge::provision(&android);
+    std::fs::create_dir_all(android.workspace.join("flows")).unwrap();
+    std::fs::write(android.workspace.join("flows/save.json"), "{}").unwrap();
+    let mut reader = McpClient::connect_as(&android, Some(edge.share("share:sh-1:read"))).await;
+    let out = reader
+        .call("read_file", json!({"path": "flows/save.json"}))
+        .await;
+    assert!(
+        text(&out).contains("does not read saved flows"),
+        "an Android read share: {out}"
+    );
 
     let desk = Harness::start(Vec::new(), false).await;
     let edge = Edge::provision(&desk);
@@ -4875,7 +4937,7 @@ async fn mcp_ends_the_driver_session_on_stream_close_and_idle() {
     let mut stream = mcp
         .http
         .get(&mcp.url)
-        .header("x-cocoonbox-edge-token", TOKEN)
+        .header("x-cocoonbox-credential", owner())
         .header("mcp-session-id", &mcp.session)
         .header("accept", "text/event-stream")
         .send()
@@ -5272,7 +5334,7 @@ async fn each_mcp_session_types_into_its_own_chrome_window() {
 
     let closed = reqwest::Client::new()
         .delete(format!("{}/mcp", h.endpoint))
-        .header("x-cocoonbox-edge-token", TOKEN)
+        .header("x-cocoonbox-credential", owner())
         .header("mcp-session-id", &b.session)
         .send()
         .await

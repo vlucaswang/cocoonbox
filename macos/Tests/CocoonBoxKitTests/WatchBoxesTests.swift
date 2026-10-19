@@ -14,7 +14,7 @@ import Testing
         defer { watcher.close() }
         let lists = Lists()
         let watch = Task {
-            await watcher.watchBoxes(onBoxes: { list in lists.append(list) }, onDisconnect: { _ in })
+            await watcher.watchBoxes(onBoxes: { list, _ in lists.append(list) }, onDisconnect: { _ in })
         }
         defer { watch.cancel() }
         #expect(await lists.seen(after: 0) { $0.count == 1 && $0[0].state == .hibernated })
@@ -38,6 +38,34 @@ import Testing
 
         let all = lists.all
         #expect(zip(all, all.dropFirst()).allSatisfy { $0 != $1 }, "a list repeats the one before: \(all.map { $0.map(\.state) })")
+    }
+
+    @Test func watchCarriesTheOfferedImagesAndNewBoxOffersOneChoicePerFamily() async throws {
+        let mock = try await MockBoxProcess()
+        defer { mock.stop() }
+        let watcher = try BoxConnection(endpoint: mock.endpoint, token: "mock-token")
+        defer { watcher.close() }
+        let offered = Mutex<[String]?>(nil)
+        let watch = Task {
+            await watcher.watchBoxes(onBoxes: { _, images in offered.withLock { $0 = images } }, onDisconnect: { _ in })
+        }
+        defer { watch.cancel() }
+        #expect(await RecreateTests.until(seconds: 10) { offered.withLock { $0 } != nil })
+        let choices = ImageChoice.choices(offered.withLock { $0 } ?? [])
+        #expect(choices.map(\.label) == ["Desktop", "cbcore", "Android"])
+        #expect(choices.map(\.image) == ["cbdesk", "cbcore", "cbdroid"])
+        let phone = try await mock.connection.createBox(name: "phone", image: try #require(choices.last).image)
+        #expect(phone.box.image == "cbdroid:v1")
+        #expect(ImageChoice.choices(["cbcore:v25", "cbcore:v24"]).isEmpty)
+    }
+
+    @Test func aChoiceIsNamedByItsFamilyAfterTheLastSlashNotByItsPlace() {
+        let android = ImageChoice.choices(["cbdroid:v3", "cbcore:v25"])
+        #expect(android.map(\.label) == ["Android", "Desktop"] && android.map(\.image) == ["cbdroid", "cbcore"])
+        let registry = ImageChoice.choices(["host:5000/cbcore:v1", "host:5000/cbdroid:v1"])
+        #expect(registry.map(\.label) == ["Desktop", "Android"])
+        #expect(registry.map(\.image) == ["host:5000/cbcore", "host:5000/cbdroid"])
+        #expect(ImageChoice.choices(["host:5000/cbcore:v1", "host:5000/cbcore:v2"]).isEmpty)
     }
 
     @Test func aResubscriptionDeliversTheWholeListAgain() async {

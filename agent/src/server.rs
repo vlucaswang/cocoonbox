@@ -7,15 +7,16 @@ use futures_util::StreamExt;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc};
-use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::service::interceptor::InterceptedService;
 use tonic::service::{Interceptor, Routes};
 use tonic::transport::Server;
+use tonic::transport::server::TcpIncoming;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::config::{Automation, ServeConfig};
 use crate::exec;
-use crate::identity::{CREDENTIAL_HEADER, Denied, EDGE_TOKEN_HEADER, Gate, Principal};
+use crate::identity::{CREDENTIAL_HEADER, Denied, Gate, Principal};
 use crate::llm;
 use crate::mcp::Mcp;
 use crate::offload;
@@ -34,8 +35,9 @@ const MAX_STATE_MESSAGE_BYTES: usize = 16 << 20;
 const DEFAULT_PAGE: u32 = 100;
 const MAX_PAGE: u32 = 1000;
 const EVENT_BUFFER: usize = 256;
-const SCREEN_WIDTH: u32 = 1280;
-const SCREEN_HEIGHT: u32 = 800;
+const SCREEN: (u32, u32) = (1280, 800);
+// redroid's boot size in image/android/base/bake.sh.
+const ANDROID_SCREEN: (u32, u32) = (720, 1280);
 // h2 frees connection credit only as a stream is read, so each stalled Exec stdin holds one stream window.
 const STREAM_WINDOW: u32 = 1 << 20;
 const CONNECTION_WINDOW: u32 = 64 << 20;
@@ -53,10 +55,9 @@ pub struct EdgeAuth {
 impl Interceptor for EdgeAuth {
     fn call(&mut self, mut req: Request<()>) -> Result<Request<()>, Status> {
         let md = req.metadata();
-        let verdict = self.gate.check(
-            md.get(CREDENTIAL_HEADER).and_then(|v| v.to_str().ok()),
-            md.get(EDGE_TOKEN_HEADER).map(|v| v.as_bytes()),
-        );
+        let verdict = self
+            .gate
+            .check(md.get(CREDENTIAL_HEADER).and_then(|v| v.to_str().ok()));
         match verdict {
             Ok(Principal::Share { .. }) if self.owner_only => Err(share_refused()),
             Ok(principal) => {
@@ -218,12 +219,18 @@ impl Session for SessionSvc {
         if cfg.model_computer != cfg.model_main {
             models.push(cfg.model_computer.clone());
         }
+        let (automation, (screen_width, screen_height)) = match cfg.automation {
+            Automation::Plain => (pb::Automation::Plain, SCREEN),
+            Automation::Desk => (pb::Automation::Desk, SCREEN),
+            Automation::Android => (pb::Automation::Android, ANDROID_SCREEN),
+        };
         Ok(Response::new(pb::HelloResponse {
             agent_version: env!("CB_AGENT_VERSION").to_owned(),
-            screen_width: SCREEN_WIDTH,
-            screen_height: SCREEN_HEIGHT,
+            screen_width,
+            screen_height,
             models,
             default_main_model: cfg.model_main.clone(),
+            automation: automation.into(),
         }))
     }
 
@@ -442,7 +449,6 @@ pub async fn serve_on(listener: TcpListener, rt: Arc<Runtime>) -> Result<(), Str
     let gate = Arc::new(Gate::new(
         rt.cfg.identity_path.clone(),
         rt.cfg.identity_owner,
-        rt.cfg.edge_token.clone(),
     ));
     let auth = EdgeAuth {
         gate: Arc::clone(&gate),
@@ -497,10 +503,7 @@ pub async fn serve_on(listener: TcpListener, rt: Arc<Runtime>) -> Result<(), Str
         .initial_connection_window_size(CONNECTION_WINDOW)
         .accept_http1(true)
         .add_routes(Routes::from(routes))
-        .serve_with_incoming_shutdown(
-            TcpListenerStream::new(listener),
-            rt.stop.clone().cancelled_owned(),
-        );
+        .serve_with_incoming_shutdown(incoming(listener), rt.stop.clone().cancelled_owned());
     let grace = async {
         rt.stop.cancelled().await;
         tokio::time::sleep(CONNECTION_GRACE).await;
@@ -512,6 +515,10 @@ pub async fn serve_on(listener: TcpListener, rt: Arc<Runtime>) -> Result<(), Str
     mcp.close_all().await;
     rt.drain(DRAIN_LIMIT).await;
     Ok(())
+}
+
+fn incoming(listener: TcpListener) -> TcpIncoming {
+    TcpIncoming::from(listener).with_nodelay(Some(true))
 }
 
 /// Refuses `req` unless the owner sent it: a share reaches only `Session.Screen` and MCP.
@@ -572,5 +579,23 @@ fn state_status(e: StateError) -> Status {
         StateError::Busy(m) => Status::unavailable(m),
         StateError::Invalid(m) => Status::invalid_argument(m),
         StateError::Failed(m) => Status::internal(m),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn accepted_sockets_send_without_delay() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut accepted = incoming(listener);
+        let _client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let stream = accepted.next().await.unwrap().unwrap();
+        assert!(
+            stream.nodelay().unwrap(),
+            "TCP_NODELAY is off on an accepted socket"
+        );
     }
 }

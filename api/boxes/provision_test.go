@@ -146,7 +146,7 @@ func TestRebaseClaimsUnderTheTenant(t *testing.T) {
 	env := newStateEnv(t)
 	accounts := &fakeAccounts{}
 	env.fake.put(machines.Machine{
-		ID: aliceBox, Owner: alice, State: machines.StateRunning, Flavor: defaultFlavor, Image: "desktop-v1", Revision: 1,
+		ID: aliceBox, Owner: alice, State: machines.StateRunning, Flavor: defaultFlavor, Image: "desktop:v1", Revision: 1,
 		Incarnation: "pod0/vm0", Meta: map[string]string{metaGW: "1", metaWake: "pod0/vm0|w0"},
 	})
 	env.svc.EnableAccounts(accounts)

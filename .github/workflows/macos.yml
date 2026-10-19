@@ -6,7 +6,6 @@ on:
     paths:
       - "macos/**"
       - "deskhost/**"
-      - "desk-core/**"
       - "Package.swift"
       - "proto/**"
       - ".github/workflows/macos.yml"

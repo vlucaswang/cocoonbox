@@ -33,6 +33,7 @@ const (
 type (
 	userKey       struct{}
 	credentialKey struct{}
+	operatorKey   struct{}
 )
 
 // Users resolves the sha256 of an API token, in lowercase hex, to an enabled user id, and gives the context that ends when the user is disabled or deleted or the credential ends.
@@ -252,6 +253,12 @@ func WithUser(ctx context.Context, user string) context.Context {
 	return context.WithValue(ctx, userKey{}, user)
 }
 
+// Operator reports whether ctx is a call of the operator socket.
+func Operator(ctx context.Context) bool {
+	operator, _ := ctx.Value(operatorKey{}).(bool)
+	return operator
+}
+
 // OperatorUnary admits unary calls as the user in HeaderOperatorUser; the operator socket's file mode is the access check.
 func OperatorUnary(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 	ctx, err := operatorUser(ctx)
@@ -276,5 +283,5 @@ func operatorUser(ctx context.Context) (context.Context, error) {
 	if len(values) != 1 || values[0] == "" {
 		return nil, status.Error(codes.Unauthenticated, "missing operator user")
 	}
-	return WithUser(ctx, values[0]), nil
+	return context.WithValue(WithUser(ctx, values[0]), operatorKey{}, true), nil
 }

@@ -3,6 +3,7 @@
 //! both ways.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub use desk_core::args::parse;
 use desk_core::wire::MAX_FRAME;
@@ -12,6 +13,11 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::UnixStream;
 use zeroize::Zeroize;
+
+/// The bound of one desk or model call to shuttle's desk service.
+pub const DESK_DEADLINE: Duration = Duration::from_secs(30);
+/// What a call to shuttle's desk service gives when the service is missing or past the call's deadline.
+pub const DESK_DOWN: &str = "the desk service is not answering";
 
 /// Tag of a command's stdout data, from the toolhost.
 pub const STDOUT: u8 = 1;
@@ -56,6 +62,14 @@ impl Client {
     pub async fn call(&self, call: &Call) -> Result<Output, String> {
         let mut stream = self.open(call).await?;
         read_frame(&mut stream).await
+    }
+
+    /// Runs one call on shuttle's desk service within `deadline`; no answer by then, or no service, is [`DESK_DOWN`].
+    pub async fn desk(&self, call: &Call, deadline: Duration) -> Result<Output, String> {
+        match tokio::time::timeout(deadline, self.call(call)).await {
+            Ok(Ok(out)) => Ok(out),
+            _ => Err(DESK_DOWN.to_owned()),
+        }
     }
 
     /// Streams a file as `user`; the stamp comes first, [`FileReader::finish`] returns the one taken after.
@@ -252,6 +266,24 @@ mod tests {
         let got: Call = read_frame(&mut b).await.unwrap();
         assert_eq!(got.tool, "shell");
         assert_eq!(got.args["command"], "ls");
+    }
+
+    #[tokio::test]
+    async fn a_desk_call_past_its_deadline_or_without_a_service_is_down_without_a_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("desk.sock");
+        let call = Call {
+            agent_id: String::new(),
+            tool: "desk_windows".into(),
+            args: Value::Null,
+        };
+        let missing = Client::new(path.clone()).desk(&call, DESK_DEADLINE).await;
+        assert_eq!(missing.unwrap_err(), DESK_DOWN);
+        let _silent = tokio::net::UnixListener::bind(&path).unwrap();
+        let late = Client::new(path)
+            .desk(&call, Duration::from_millis(100))
+            .await;
+        assert_eq!(late.unwrap_err(), DESK_DOWN);
     }
 
     #[tokio::test]

@@ -33,7 +33,7 @@ var (
 	defaultFlavor = machines.Flavor{VCPUs: 4, MemoryMiB: 8192, DiskGiB: 40}
 	testDefaults  = Defaults{
 		Flavor: defaultFlavor, Flavors: []machines.Flavor{{VCPUs: 2, MemoryMiB: 4096, DiskGiB: 40}},
-		Image: "desktop-v2", RebaseImages: []string{"desktop-v3"}, MaxRunning: 1,
+		Image: "desktop:v2", RebaseImages: []string{"desktop:v3"}, MaxRunning: 1,
 	}
 )
 
@@ -48,13 +48,15 @@ func TestBoxID(t *testing.T) {
 }
 
 func TestLatestStaysInTheImageFamily(t *testing.T) {
-	d := Defaults{Image: "cbdesk:v25", RebaseImages: []string{"cbcore:v2", "cbdesk:v24", "cbcore:v1"}}
+	d := Defaults{Image: "cbdesk:v25", RebaseImages: []string{"cbcore:v2", "cbdesk:v24", "cbcore:v1", "host:5000/cbcore:v3"}}
 	tests := []struct{ image, want string }{
 		{"cbdesk:v22", "cbdesk:v25"},
 		{"cbdesk:v25", "cbdesk:v25"},
 		{"cbcore:v1", "cbcore:v2"},
-		{"other:v1", "cbdesk:v25"},
+		{"cbdroid:v3", "cbdroid:v3"},
 		{"", "cbdesk:v25"},
+		{"host:5000/cbcore:v1", "host:5000/cbcore:v3"},
+		{"host:5000/cbdesk:v1", "host:5000/cbdesk:v1"},
 	}
 	for _, tt := range tests {
 		if got := d.latest(tt.image); got != tt.want {
@@ -63,7 +65,28 @@ func TestLatestStaysInTheImageFamily(t *testing.T) {
 	}
 }
 
-func TestTheImageOfAUsersPolicyStartsAndUpgradesItsBoxes(t *testing.T) {
+func TestAFamilyIsTheNameBeforeTheTagAfterTheLastSlash(t *testing.T) {
+	for image, want := range map[string]string{
+		"cbcore:v1":           "cbcore",
+		"cbcore":              "cbcore",
+		"host:5000/cbcore:v1": "host:5000/cbcore",
+		"host:5000/cbcore":    "host:5000/cbcore",
+		"":                    "",
+	} {
+		if got := familyOf(image); got != want {
+			t.Errorf("familyOf(%q) = %q, want %q", image, got, want)
+		}
+	}
+	d := Defaults{Image: "cbcore:v2", RebaseImages: []string{"host:5000/cbcore:v3"}}
+	if got, ok := d.offered("host:5000/cbcore"); !ok || got != "host:5000/cbcore:v3" {
+		t.Errorf("offered(host:5000/cbcore) = %q, %v, want host:5000/cbcore:v3", got, ok)
+	}
+	if got, ok := d.offered("host"); ok {
+		t.Errorf("offered(host) = %q, want refused", got)
+	}
+}
+
+func TestTheImageOfAUsersPolicyStartsItsBoxesAndUpgradesThoseOfItsFamily(t *testing.T) {
 	fake := newFakeMachines()
 	st := newFakeStore()
 	defaults := testDefaults
@@ -98,20 +121,34 @@ func TestTheImageOfAUsersPolicyStartsAndUpgradesItsBoxes(t *testing.T) {
 		t.Errorf("bob's upgrade = %q, want cbdesk:v25", got)
 	}
 
-	running := newFakeMachines()
-	running.put(machines.Machine{ID: aliceBox, Owner: alice, State: machines.StateRunning, Flavor: defaultFlavor, Image: "cbdesk:v25", Revision: 1})
-	svc = New(running, defaults, registry)
-	svc.EnableState(newFakeAgent(st), st, &fakeKeys{})
-	ctx := auth.WithUser(t.Context(), alice)
-	box, err := svc.Get(ctx, &controlv1.GetBoxRequest{BoxId: aliceBox})
-	if err != nil || box.GetLatestImage() != "cbcore:v1" {
-		t.Fatalf("box = %v, %v, want latest cbcore:v1 for its owner", box, err)
+	for _, tt := range []struct{ image, want string }{
+		{"cbcore:v2", "cbcore:v1"},
+		{"cbdesk:v24", "cbdesk:v25"},
+	} {
+		running := newFakeMachines()
+		running.put(machines.Machine{ID: aliceBox, Owner: alice, State: machines.StateRunning, Flavor: defaultFlavor, Image: tt.image, Revision: 1})
+		svc = New(running, defaults, registry)
+		svc.EnableState(newFakeAgent(st), st, &fakeKeys{})
+		ctx := auth.WithUser(t.Context(), alice)
+		box, err := svc.Get(ctx, &controlv1.GetBoxRequest{BoxId: aliceBox})
+		if err != nil || box.GetLatestImage() != tt.want {
+			t.Fatalf("box on %s = %v, %v, want latest %s for its owner", tt.image, box, err, tt.want)
+		}
+		if _, err := svc.Rebase(ctx, &controlv1.RebaseRequest{BoxId: aliceBox}); err != nil {
+			t.Fatalf("Rebase of the box on %s: %v", tt.image, err)
+		}
+		if spec := running.waitSpec(t, 1); spec.Image != tt.want {
+			t.Errorf("upgrade target of the box on %s = %q, want %s", tt.image, spec.Image, tt.want)
+		}
 	}
-	if _, err := svc.Rebase(ctx, &controlv1.RebaseRequest{BoxId: aliceBox}); err != nil {
-		t.Fatalf("Rebase: %v", err)
-	}
-	if spec := running.waitSpec(t, 1); spec.Image != "cbcore:v1" {
-		t.Errorf("upgrade target = %q, want cbcore:v1", spec.Image)
+}
+
+func TestListNamesTheOfferedImagesOnce(t *testing.T) {
+	defaults := testDefaults
+	defaults.Image, defaults.RebaseImages = "cbcore:v25", []string{"cbcore:v25", "cbdroid:v3", "cbcore:v24"}
+	resp, err := New(newFakeMachines(), defaults, newFakeRegistry()).List(auth.WithUser(t.Context(), alice), &controlv1.ListBoxesRequest{})
+	if want := []string{"cbcore:v25", "cbdroid:v3", "cbcore:v24"}; err != nil || !slices.Equal(resp.GetOfferedImages(), want) {
+		t.Errorf("List offered %v, %v, want %v", resp.GetOfferedImages(), err, want)
 	}
 }
 
@@ -484,7 +521,7 @@ func (f *fakeMachines) Ensure(_ context.Context, spec machines.Spec) (machines.M
 		f.clock++
 		m = machines.Machine{
 			ID: spec.ID, Owner: spec.Owner, State: machines.StateStarting, Flavor: spec.Flavor,
-			Image: cmp.Or(spec.Image, "desktop-v1"), CreatedAt: time.Unix(f.clock, 0), Revision: 1,
+			Image: cmp.Or(spec.Image, "desktop:v1"), CreatedAt: time.Unix(f.clock, 0), Revision: 1,
 		}
 		f.machines[spec.ID] = m
 		return m, machines.ActionCreated, nil

@@ -4,7 +4,7 @@ use serde_json::Value;
 use zbus::Connection;
 use zbus::zvariant::Value as Variant;
 
-const DRIVER_CGROUP: &str = "/cua-driver.service";
+const DRIVER_CGROUPS: [&str; 2] = ["/cua-driver.service", "/cocoon-shuttle.service"];
 const SYSTEMD: &str = "org.freedesktop.systemd1";
 const SYSTEMD_PATH: &str = "/org/freedesktop/systemd1";
 const MANAGER: &str = "org.freedesktop.systemd1.Manager";
@@ -81,8 +81,10 @@ fn children(pid: u32) -> Vec<u32> {
 }
 
 fn in_driver(pid: u32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
-        .is_ok_and(|c| c.lines().any(|l| l.ends_with(DRIVER_CGROUP)))
+    std::fs::read_to_string(format!("/proc/{pid}/cgroup")).is_ok_and(|c| {
+        c.lines()
+            .any(|l| DRIVER_CGROUPS.iter().any(|g| l.ends_with(g)))
+    })
 }
 
 fn unit_name(app: &str, pid: u32) -> String {

@@ -285,7 +285,7 @@ func TestAFileRestoreInOneProcessWaitsOutARebaseElsewhere(t *testing.T) {
 		close(saving)
 		<-gate
 	}
-	if _, err := a.svc.Rebase(a.ctx, &controlv1.RebaseRequest{BoxId: aliceBox, Image: "desktop-v3"}); err != nil {
+	if _, err := a.svc.Rebase(a.ctx, &controlv1.RebaseRequest{BoxId: aliceBox, Image: "desktop:v3"}); err != nil {
 		t.Fatalf("Rebase: %v", err)
 	}
 	<-saving

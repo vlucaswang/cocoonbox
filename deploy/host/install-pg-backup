@@ -1,0 +1,17 @@
+#!/bin/sh
+# Installs the 6-hourly dump with its encrypted off-host copy on a host install-pg set up, without touching the cluster; idempotent.
+# It writes through cb-s3 with the api's state-store credentials; install-disk-alert provides cb-alert.
+# usage: sudo deploy/host/install-pg-backup <age recipient file>
+set -eu
+export DEBIAN_FRONTEND=noninteractive
+SRC="$(cd "$(dirname "$0")" && pwd)"
+
+PUB=${1:?usage: install-pg-backup <age recipient file>}
+grep -q '^age1' "$PUB" || { echo "$PUB holds no age recipient" >&2; exit 1; }
+apt-get install -y -q age >/dev/null
+install -m 0644 "$PUB" /etc/cocoonbox/backup.age.pub
+install -m 0755 "$SRC/cb-s3" "$SRC/cb-pg-dump" "$SRC/cb-pg-drill" /usr/local/sbin/
+install -m 0644 "$SRC/cb-pg-dump.service" "$SRC/cb-pg-dump.timer" /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now cb-pg-dump.timer >/dev/null
+systemctl start cb-pg-dump.service

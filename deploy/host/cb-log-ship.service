@@ -1,0 +1,8 @@
+[Unit]
+Description=Ship new sandboxd audit and usage journal lines to the off-host log bucket
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cb-log-ship

@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""usage: cb-s3 put BUCKET KEY FILE|- | get BUCKET KEY FILE | list BUCKET PREFIX (prints "key size" lines)
+Talks to the api's state-store endpoint with its credentials, read at run time from /etc/cocoonbox/api.yaml (state) and its
+credentials_file; the key pair reaches curl through a pipe, never argv or a file."""
+
+import os
+import re
+import subprocess
+import sys
+import urllib.parse
+
+import yaml
+
+API_CONF = "/etc/cocoonbox/api.yaml"
+
+
+def store():
+    with open(API_CONF) as f:
+        state = yaml.safe_load(f)["state"]
+    keys = {}
+    with open(os.path.join(os.path.dirname(API_CONF), state["credentials_file"])) as f:
+        for line in f:
+            k, sep, v = line.strip().partition("=")
+            if sep:
+                keys[k] = v
+    scheme = "https" if state.get("secure", True) else "http"
+    return f"{scheme}://{state['endpoint']}", keys["STORE_ACCESS_KEY"], keys["STORE_SECRET_KEY"]
+
+
+def curl(path, args, capture=False):
+    endpoint, access, secret = store()
+    r, w = os.pipe()
+    os.write(w, f'url = "{endpoint}/{path}"\nuser = "{access}:{secret}"\n'.encode())
+    os.close(w)
+    try:
+        return subprocess.run(["curl", "-fsS", "--max-time", "600", "--aws-sigv4", "aws:amz:auto:s3", "-K", f"/dev/fd/{r}", *args],
+                              check=True, pass_fds=(r,), capture_output=capture).stdout
+    finally:
+        os.close(r)
+
+
+def list_keys(bucket, prefix):
+    token = ""
+    while True:
+        query = "list-type=2&prefix=" + urllib.parse.quote(prefix, safe="")
+        if token:
+            query += "&continuation-token=" + urllib.parse.quote(token, safe="")
+        page = curl(f"{bucket}?{query}", [], capture=True).decode()
+        for key, size in re.findall(r"<Key>([^<]+)</Key>.*?<Size>(\d+)</Size>", page):
+            print(key, size)
+        token = next(iter(re.findall(r"<NextContinuationToken>([^<]+)</NextContinuationToken>", page)), "")
+        if not token:
+            return
+
+
+def main():
+    op, bucket, arg = sys.argv[1:4]
+    if op == "list":
+        list_keys(bucket, arg)
+        return
+    path = f"{bucket}/{urllib.parse.quote(arg)}"
+    if op == "put":
+        curl(path, ["-o", "/dev/null", "-X", "PUT", "--data-binary", "@" + sys.argv[4]])
+    elif op == "get":
+        curl(path, ["-o", sys.argv[4]])
+    else:
+        sys.exit(__doc__)
+
+
+main()

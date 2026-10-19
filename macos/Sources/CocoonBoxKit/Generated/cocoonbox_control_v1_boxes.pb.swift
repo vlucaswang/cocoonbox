@@ -408,6 +408,10 @@ public nonisolated struct Cocoonbox_Control_V1_ListBoxesResponse: Sendable {
 
   public var boxes: [Cocoonbox_Control_V1_Box] = []
 
+  /// Images CreateBoxRequest.image may name, the default image first; the
+  /// family of one is the name before ':'.
+  public var offeredImages: [String] = []
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -1197,7 +1201,7 @@ nonisolated extension Cocoonbox_Control_V1_ListBoxesRequest: SwiftProtobuf.Messa
 
 nonisolated extension Cocoonbox_Control_V1_ListBoxesResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListBoxesResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}boxes\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}boxes\0\u{3}offered_images\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1206,6 +1210,7 @@ nonisolated extension Cocoonbox_Control_V1_ListBoxesResponse: SwiftProtobuf.Mess
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try { try decoder.decodeRepeatedMessageField(value: &self.boxes) }()
+      case 2: try { try decoder.decodeRepeatedStringField(value: &self.offeredImages) }()
       default: break
       }
     }
@@ -1215,11 +1220,15 @@ nonisolated extension Cocoonbox_Control_V1_ListBoxesResponse: SwiftProtobuf.Mess
     if !self.boxes.isEmpty {
       try visitor.visitRepeatedMessageField(value: self.boxes, fieldNumber: 1)
     }
+    if !self.offeredImages.isEmpty {
+      try visitor.visitRepeatedStringField(value: self.offeredImages, fieldNumber: 2)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Cocoonbox_Control_V1_ListBoxesResponse, rhs: Cocoonbox_Control_V1_ListBoxesResponse) -> Bool {
     if lhs.boxes != rhs.boxes {return false}
+    if lhs.offeredImages != rhs.offeredImages {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

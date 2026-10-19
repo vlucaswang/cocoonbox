@@ -6,13 +6,20 @@ PORT=27183
 SCID=4a264fb0
 JAR=/data/local/tmp/scrcpy-server.jar
 SU=/data/local/tmp/su1000
+CLIP_PORT=27184
+CLIP_SCID=4a264fb1
+CLIP_JAR=/data/local/tmp/scrcpy-server-shell.jar
 server_pid=""
+clip_pid=""
 rfb_pid=""
 
 cleanup() {
 	[ -z "$rfb_pid" ] || kill "$rfb_pid" 2>/dev/null || true
+	[ -z "$clip_pid" ] || kill "$clip_pid" 2>/dev/null || true
 	adb -s "$S" forward --remove "tcp:$PORT" >/dev/null 2>&1 || true
+	adb -s "$S" forward --remove "tcp:$CLIP_PORT" >/dev/null 2>&1 || true
 	adb -s "$S" shell pkill -f "com.genymobile.scrcpy.Server 4.1 scid=$SCID" >/dev/null 2>&1 || true
+	adb -s "$S" shell pkill -f "com.genymobile.scrcpy.Server 4.1 scid=$CLIP_SCID" >/dev/null 2>&1 || true
 	[ -z "$server_pid" ] || kill "$server_pid" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -30,15 +37,35 @@ done
 cleanup
 adb -s "$S" push /usr/local/share/scrcpy/scrcpy-server.jar "$JAR" >/dev/null
 adb -s "$S" push /usr/local/share/scrcpy/su1000 "$SU" >/dev/null
+adb -s "$S" push /usr/local/share/scrcpy/scrcpy-server-shell.jar "$CLIP_JAR" >/dev/null
 adb -s "$S" forward "tcp:$PORT" "localabstract:scrcpy_$SCID"
+adb -s "$S" forward "tcp:$CLIP_PORT" "localabstract:scrcpy_$CLIP_SCID"
 adb -s "$S" shell CLASSPATH="$JAR" "$SU" app_process / com.genymobile.scrcpy.Server 4.1 \
 	"scid=$SCID" log_level=info tunnel_forward=true audio=false send_device_meta=false send_dummy_byte=false \
-	video_codec=h264 video_bit_rate=8000000 max_fps=60 'video_codec_options=profile=1,i-frame-interval=1' cleanup=false &
+	video_codec=h264 video_bit_rate=8000000 max_fps=60 'video_codec_options=profile=1,i-frame-interval=1' capture_orientation=@0 cleanup=false &
 server_pid=$!
+# the system uid may not read the clipboard, so a control-only session as shell carries it; scrcpy-rfb reconnects when it restarts
+while :; do
+	adb -s "$S" shell CLASSPATH="$CLIP_JAR" app_process / com.genymobile.scrcpy.Server 4.1 \
+		"scid=$CLIP_SCID" log_level=info tunnel_forward=true video=false audio=false control=true \
+		send_device_meta=false send_dummy_byte=false cleanup=false || true
+	sleep 1
+done &
+clip_pid=$!
 until adb -s "$S" shell cat /proc/net/unix 2>/dev/null | grep -q "@scrcpy_$SCID"; do
 	kill -0 "$server_pid"
 	sleep 0.1
 done
-/usr/local/bin/scrcpy-rfb -rfbport 5900 -listen 127.0.0.1 -desktop Android &
+clip_args=(--clipboard-port "$CLIP_PORT")
+deadline=$((SECONDS + 10))
+until timeout 1 adb -s "$S" shell cat /proc/net/unix 2>/dev/null | grep -q "@scrcpy_$CLIP_SCID"; do
+	if [ "$SECONDS" -ge "$deadline" ]; then
+		echo "remoteview: the clipboard session did not start within 10 s; serving the screen without the clipboard" >&2
+		clip_args=()
+		break
+	fi
+	sleep 0.1
+done
+/usr/local/bin/scrcpy-rfb -rfbport 5900 -listen 127.0.0.1 -desktop Android "${clip_args[@]}" &
 rfb_pid=$!
 wait -n "$server_pid" "$rfb_pid"

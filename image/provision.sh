@@ -4,9 +4,9 @@
 set -euo pipefail
 
 # loomhand/cua dev, built by cua-driver.sh; cut.sh -p brings it in as vendor/
-CUA_COMMIT=4924a74c34ab99e2d05b54cbfc67eacb890f2525
-CUA_VERSION=0.35.4-loomhand.1
-CUA_SHA256=b5506f1dea38d1930e5f5b94d244f9f1173074ec138c6d4a99c732c1ec970bc5
+CUA_COMMIT=65a232e40abbb4f2665b26b46dc30bdfb8e33489
+CUA_VERSION=0.36.0-loomhand.5
+CUA_SHA256=e54c05edb2c96953da381b9a196f0dbb8970a9930c60832c7112f96e9e9ffffb
 CUA_TARBALL="cua-driver-rs-${CUA_VERSION}-linux-x86_64.tar.gz"
 MISE_VERSION=2026.10.0
 MISE_SHA256=6ae3d2bda39cca86713501317edf623b59b75cd8afa2e31c20b1ee6500b4b739

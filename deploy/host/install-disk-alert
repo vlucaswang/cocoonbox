@@ -1,10 +1,11 @@
 #!/bin/sh
-# Installs the daily journal warning when /, /srv/cb or a /srv/cb project quota is 80% full; idempotent.
+# Installs the 5-minute disk check that alerts through cb-alert when /, /srv/cb or a /srv/cb project quota crosses 70% or 85%, or
+# sandboxd refuses work at capacity, and the daily cb-alert digest; alerts go to the journal (tag cb-alert); idempotent.
 # usage: sudo deploy/host/install-disk-alert
 set -eu
 SRC="$(cd "$(dirname "$0")" && pwd)"
-install -m 0755 "$SRC/cb-disk-alert" /usr/local/sbin/cb-disk-alert
-install -m 0644 "$SRC/cb-disk-alert.service" "$SRC/cb-disk-alert.timer" /etc/systemd/system/
+install -m 0755 "$SRC/cb-alert" "$SRC/cb-disk-alert" /usr/local/sbin/
+install -m 0644 "$SRC/cb-disk-alert.service" "$SRC/cb-disk-alert.timer" "$SRC/cb-alert-digest.service" "$SRC/cb-alert-digest.timer" /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now cb-disk-alert.timer >/dev/null
+systemctl enable --now cb-disk-alert.timer cb-alert-digest.timer >/dev/null
 systemctl start cb-disk-alert.service

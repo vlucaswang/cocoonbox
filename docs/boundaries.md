@@ -15,7 +15,7 @@ The four components share nothing except published contracts.
 
 Rules:
 - No component imports another component's code, reads its config or state, or shares a database, file or socket with it.
-- `desk-core/` is the one shared library: the toolhost wire, the desk call arguments and the window and name matching that the Linux toolhost (`agent/`) and the desk host (`deskhost/`) both serve (contracts.md, Toolhost wire). It holds contract code only; each host keeps its own platform code.
+- `shuttle-desk-core` (loomhand/shuttle `crates/desk-core`, a git dependency pinned to a shuttle tag) is the one shared library: the toolhost wire, the desk call arguments and the window and name matching that the Linux toolhost (`agent/`) and the desk host (`deskhost/`) both serve (contracts.md, Toolhost wire). It holds contract code only; each host keeps its own platform code.
 - The edge never interprets agent payloads: gRPC frames and MCP HTTP exchanges pass through unchanged; it knows only auth, ownership and where a box lives. One deliberate exception is a trust point that must not rest on what a box reports, since `user` has sudo and could forge it: the share page bridge parses the RFB stream and drops what a viewer may not send or get, so it stays view-only and never gets the box's clipboard (`api/edge/screen.go`, `api/edge/rfb.go`).
 - The agent never knows how its machine is scheduled (Kubernetes, sandboxd, a laptop) or who the user is beyond the principal in the edge credential (the owner, or a share and its guest's user id).
 - The app never knows pod IPs, VNC ports or guest users; it sees box ids, gRPC services and an RFB byte stream.

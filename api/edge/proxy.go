@@ -1,4 +1,4 @@
-// Package edge forwards cocoonbox.agent.v1 calls to the caller's box without decoding them.
+// Package edge forwards cocoonbox.agent.v1 calls to the caller's box without decoding them; it serves Session.Screen from the box's RFB server.
 package edge
 
 import (
@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/projecteru2/core/log"
@@ -32,6 +33,9 @@ const (
 	stateServicePrefix = "/cocoonbox.agent.v1.State/"
 	// sessionEvents only watches the box, so it keeps no box up.
 	sessionEvents = "/cocoonbox.agent.v1.Session/Events"
+	sessionScreen = "/cocoonbox.agent.v1.Session/Screen"
+	// maxScreensPerBox bounds the RFB relays one box holds open, owner and share streams together.
+	maxScreensPerBox = 8
 )
 
 var droppedHeaders = []string{auth.HeaderAuthorization, HeaderEdgeToken, credential.Header, "content-type", "user-agent", "te"}
@@ -55,11 +59,14 @@ type Proxy struct {
 	creds    Credentials
 	codec    Codec
 	pool     *dialer.Pool
+
+	screensMu sync.Mutex
+	screens   map[string]int
 }
 
 // NewProxy builds a Proxy that reaches agents over pool and authenticates to them with box credentials from creds.
 func NewProxy(resolver Resolver, creds Credentials, pool *dialer.Pool) *Proxy {
-	return &Proxy{resolver: resolver, creds: creds, codec: NewCodec(), pool: pool}
+	return &Proxy{resolver: resolver, creds: creds, codec: NewCodec(), pool: pool, screens: map[string]int{}}
 }
 
 // Handle proxies one call; install it with grpc.UnknownServiceHandler.
@@ -88,21 +95,30 @@ func (p *Proxy) Handle(_ any, ss grpc.ServerStream) error {
 	if method != sessionEvents {
 		defer p.resolver.Reached(boxes[0])()
 	}
-	conn, err := p.conn(ctx, boxes[0], ep)
-	if err != nil {
-		return err
-	}
 
 	start := time.Now()
-	upCtx, cancel := context.WithCancel(metadata.NewOutgoingContext(ctx, p.outgoing(md, boxes[0], wake)))
-	defer cancel()
-	up, err := conn.NewStream(upCtx, &grpc.StreamDesc{ServerStreams: true, ClientStreams: true}, method, grpc.ForceCodecV2(p.codec))
-	if err == nil {
-		err = p.pump(ctx, ss, up, cancel)
+	if method == sessionScreen {
+		err = p.relayScreen(ctx, ss, boxes[0], ep)
+	} else {
+		err = p.forward(ctx, ss, method, boxes[0], p.outgoing(md, boxes[0], wake), ep)
 	}
 	log.WithFunc("edge.Proxy.Handle").Infof(ctx, "%s user=%s box=%q addr=%s code=%s in %s",
 		method, user, boxes[0], ep.Key, status.Code(err), time.Since(start).Round(time.Millisecond))
 	return err
+}
+
+func (p *Proxy) forward(ctx context.Context, down grpc.ServerStream, method, box string, md metadata.MD, ep machines.Endpoint) error {
+	conn, err := p.conn(ctx, box, ep)
+	if err != nil {
+		return err
+	}
+	upCtx, cancel := context.WithCancel(metadata.NewOutgoingContext(ctx, md))
+	defer cancel()
+	up, err := conn.NewStream(upCtx, &grpc.StreamDesc{ServerStreams: true, ClientStreams: true}, method, grpc.ForceCodecV2(p.codec))
+	if err != nil {
+		return err
+	}
+	return p.pump(ctx, down, up, cancel)
 }
 
 func (p *Proxy) pump(ctx context.Context, down grpc.ServerStream, up grpc.ClientStream, cancel context.CancelFunc) error {

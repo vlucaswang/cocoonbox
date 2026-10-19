@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
@@ -58,7 +60,7 @@ func TestSaveStateIsIncremental(t *testing.T) {
 		t.Errorf("second upload puts = %v, want only c4", puts)
 	}
 	box, err := env.svc.Get(env.ctx, &controlv1.GetBoxRequest{BoxId: aliceBox})
-	if err != nil || box.GetLastSavedAtMs() == 0 || box.GetLatestImage() != "desktop-v2" {
+	if err != nil || box.GetLastSavedAtMs() == 0 || box.GetLatestImage() != "desktop:v2" {
 		t.Errorf("box = %v, %v", box, err)
 	}
 	if head := string(env.store.objects[alice+"/boxes/"+aliceBox+"/head.json"]); !strings.Contains(head, `"latest":"`+snapshotID(2)+`"`) {
@@ -133,7 +135,7 @@ func TestRebase(t *testing.T) {
 	env.fake.push(machines.Machine{ID: newID, State: machines.StateRunning})
 	events := watch(t, env.svc, env.ctx, op.GetId(), "")
 	last := events[len(events)-1]
-	if last.GetPhase() != controlv1.Phase_PHASE_DONE || !strings.Contains(last.GetDetail(), "now on "+newID+" (desktop-v2)") {
+	if last.GetPhase() != controlv1.Phase_PHASE_DONE || !strings.Contains(last.GetDetail(), "now on "+newID+" (desktop:v2)") {
 		t.Fatalf("last event = %v", last)
 	}
 	phases := map[controlv1.Phase]bool{}
@@ -145,7 +147,7 @@ func TestRebase(t *testing.T) {
 			t.Errorf("no %s event in %v", p, events)
 		}
 	}
-	if spec := env.fake.lastSpec(); spec.Image != "desktop-v2" || spec.Owner != alice || spec.Flavor != defaultFlavor {
+	if spec := env.fake.lastSpec(); spec.Image != "desktop:v2" || spec.Owner != alice || spec.Flavor != defaultFlavor {
 		t.Errorf("rebase spec = %+v", spec)
 	}
 	if c := env.agent.lastPlan().GetConsistency(); c != agentv1.Consistency_CONSISTENCY_QUIESCED {
@@ -176,7 +178,7 @@ func TestRebaseKeepsOldMachineWhenRestoreFails(t *testing.T) {
 	env := newStateEnv(t)
 	env.agent.chunks = []string{hexID("c1")}
 	env.agent.restoreErr = errors.New("disk full")
-	op, err := env.svc.Rebase(env.ctx, &controlv1.RebaseRequest{BoxId: aliceBox, Image: "desktop-v3"})
+	op, err := env.svc.Rebase(env.ctx, &controlv1.RebaseRequest{BoxId: aliceBox, Image: "desktop:v3"})
 	if err != nil {
 		t.Fatalf("Rebase: %v", err)
 	}
@@ -414,9 +416,43 @@ func TestUpgradeWithoutAnImageStaysInTheBoxFamily(t *testing.T) {
 	}
 }
 
+func TestRebaseStaysInTheBoxFamilyUnlessTheOperatorAsks(t *testing.T) {
+	fake := newFakeMachines()
+	fake.put(machines.Machine{ID: aliceBox, Owner: alice, State: machines.StateRunning, Flavor: defaultFlavor, Image: "cbdroid:v3", Revision: 1})
+	st := newFakeStore()
+	defaults := testDefaults
+	defaults.Image, defaults.RebaseImages = "cbcore:v2", []string{"cbcore:v1"}
+	svc := New(fake, defaults, newFakeRegistry())
+	svc.EnableState(newFakeAgent(st), st, &fakeKeys{})
+	ctx := auth.WithUser(t.Context(), alice)
+	box, err := svc.Get(ctx, &controlv1.GetBoxRequest{BoxId: aliceBox})
+	if err != nil || box.GetLatestImage() != "cbdroid:v3" {
+		t.Fatalf("box = %v, %v, want latest cbdroid:v3 so no upgrade is offered", box, err)
+	}
+	if _, err := svc.Rebase(ctx, &controlv1.RebaseRequest{BoxId: aliceBox}); status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "choose cbcore:v2, cbcore:v1") {
+		t.Errorf("Rebase without an image off an offered family = %v, want InvalidArgument naming the offered images", err)
+	}
+	if _, err := svc.Rebase(ctx, &controlv1.RebaseRequest{BoxId: aliceBox, Image: "cbcore:v2"}); status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("Rebase of a user to another family = %v, want FailedPrecondition", err)
+	}
+	if n := fake.specCount(); n != 0 {
+		t.Fatalf("refused Rebases created %d machines", n)
+	}
+	operatorCtx := metadata.NewIncomingContext(t.Context(), metadata.Pairs(auth.HeaderOperatorUser, alice))
+	_, err = auth.OperatorUnary(operatorCtx, &controlv1.RebaseRequest{BoxId: aliceBox, Image: "cbcore:v2"}, &grpc.UnaryServerInfo{}, func(ctx context.Context, req any) (any, error) {
+		return svc.Rebase(ctx, req.(*controlv1.RebaseRequest))
+	})
+	if err != nil {
+		t.Fatalf("operator Rebase to another family: %v", err)
+	}
+	if spec := fake.waitSpec(t, 1); spec.Image != "cbcore:v2" {
+		t.Errorf("operator Rebase target = %q, want cbcore:v2", spec.Image)
+	}
+}
+
 func TestRebaseRefusesImagesOffTheAllowList(t *testing.T) {
 	env := newStateEnv(t)
-	for _, image := range []string{"vk-cocoonbox-cb-9f86d081884c-0-984b48", "cocoonbox-desktop-v9", "desktop-v1"} {
+	for _, image := range []string{"vk-cocoonbox-cb-9f86d081884c-0-984b48", "cocoonbox-desktop-v9", "desktop:v1"} {
 		_, err := env.svc.Rebase(env.ctx, &controlv1.RebaseRequest{BoxId: aliceBox, Image: image})
 		if status.Code(err) != codes.InvalidArgument {
 			t.Errorf("Rebase to %q: %v, want InvalidArgument", image, err)
@@ -493,6 +529,8 @@ func TestEnsureRestoresAMissingMachineIntoItsImageFamily(t *testing.T) {
 		{"image owner's cbcore box", "cbcore:v6", false, false, true, "cbcore:v8"},
 		{"image owner's parked box on an offered image", "cbcore:v6", false, true, true, "cbcore:v6"},
 		{"image owner's parked box on a retired image", "cbcore:v5", false, true, true, "cbcore:v8"},
+		{"box of a family not offered", "cbdroid:v3", false, false, true, "cbdroid:v3"},
+		{"parked box of a family not offered", "cbdroid:v3", false, true, true, "cbdroid:v3"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1000,7 +1038,7 @@ type stateEnv struct {
 func newStateEnv(t *testing.T) *stateEnv {
 	t.Helper()
 	fake := newFakeMachines()
-	fake.put(machines.Machine{ID: aliceBox, Owner: alice, State: machines.StateRunning, Flavor: defaultFlavor, Image: "desktop-v1", Revision: 1})
+	fake.put(machines.Machine{ID: aliceBox, Owner: alice, State: machines.StateRunning, Flavor: defaultFlavor, Image: "desktop:v1", Revision: 1})
 	st := newFakeStore()
 	agent := newFakeAgent(st)
 	keys := &fakeKeys{}

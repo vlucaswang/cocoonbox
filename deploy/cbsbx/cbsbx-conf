@@ -4,9 +4,11 @@ usage: cbsbx-conf <template>=<warm> [<template>=<warm> ...]   the first is the d
 With an egress CA under /etc/cocoonbox/egress-ca, CB_EGRESS_INTERMEDIATE names its intermediate cert and key.
 CB_MAX_CLAIMS caps the node's live claims, hibernated ones included (default 16)."""
 
+import ipaddress
 import json
 import os
 import re
+import subprocess
 import sys
 
 S = "/srv/cb/sbx"
@@ -20,6 +22,11 @@ APT_PORT = 3142
 STATE_PORT = int(os.environ.get("CB_STATE_PORT", "19000"))
 RESIDENTIAL = "10.203.1.2"
 STORAGE = "40G"
+DISK_RESERVE = "100G"
+CONN_RATE = {"per_second": 30, "burst": 600}
+SSH_PORT = 22
+WEB_PORTS = [80, 443]
+FCM_PORTS = [5228, 5229, 5230]
 WARMUP = ("for i in $(seq 1 600); do systemctl -q is-active cocoonbox-xorg cocoonbox-session cocoonbox-toolhost cocoonbox-agent "
           "&& (exec 3<>/dev/tcp/127.0.0.1/5900) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/7443) 2>/dev/null && exit 0; "
           "sleep 0.2; done; exit 1")
@@ -35,16 +42,32 @@ CHROME_WARMUP_FROM = 15
 INJECT_FROM = 23
 CONNECT_FROM = 24
 
+
+def ip_json(*args):
+    return json.loads(subprocess.run(["ip", "-j", *args], capture_output=True, check=True, text=True).stdout)
+
+
+def public_addrs():
+    dev = ip_json("route", "show", "default")[0]["dev"]
+    addrs = [ipaddress.ip_address(a["local"]) for a in ip_json("addr", "show", "dev", dev, "scope", "global")[0]["addr_info"] if "local" in a]
+    return [a for a in addrs if a.is_global]
+
+
 if len(sys.argv) < 2 or any("=" not in a for a in sys.argv[1:]):
     sys.exit(__doc__)
 gw = {"host": GATEWAY, "ports": [GW_PORT], "secret": "GW_KEY"}
 connect = {"host": GATEWAY, "ports": [CONNECT_PORT], "secret": "CB_CONNECT_KEY"}
-inject = {"host": "*", "intercept": "inject"}
-rest = [{"host": "*"}]
-egress = {"allow": [gw, *rest]}
-inject_egress = {"allow": [gw, inject, *rest]}
+apt = {"host": GATEWAY, "ports": [APT_PORT]}
+inject = {"host": "*", "intercept": "inject", "ports": WEB_PORTS}
+public = {"host": "*", "ports": [SSH_PORT, *WEB_PORTS]}
+egress = {"allow": [gw, apt, public]}
+inject_egress = {"allow": [gw, apt, inject, public]}
 # the door key rule precedes the inject rule, since a plain request takes the first rule that matches
-connect_egress = {"allow": [gw, connect, inject, *rest]}
+connect_egress = {"allow": [gw, connect, apt, inject, public]}
+# Android's push channel (FCM) holds a connection on 5228-5230
+android_egress = {"allow": [gw, connect, apt, inject, {"host": "*", "ports": [SSH_PORT, *WEB_PORTS, *FCM_PORTS]}]}
+# the tenant class narrows nothing; the pool rules hold the ports
+tenant_egress = {"allow": [gw, {"host": "*"}]}
 pools = []
 for arg in sys.argv[1:]:
     template, warm = arg.rsplit("=", 1)
@@ -52,12 +75,12 @@ for arg in sys.argv[1:]:
     # every family but cbdesk is cut from a template with the newest rules
     n = 0 if not version else int(version[2]) if version[1] == "cbdesk" else CONNECT_FROM
     if version and version[1] in ANDROID_FAMILIES:
-        warmup = ANDROID_WARMUP
+        warmup, pool_egress = ANDROID_WARMUP, android_egress
     else:
         warmup = CHROME_WARMUP if n >= CHROME_WARMUP_FROM else WARMUP
+        pool_egress = connect_egress if n >= CONNECT_FROM else inject_egress if n >= INJECT_FROM else egress
     pools.append({"template": template, "net": "none", "size": "xlarge", "storage": STORAGE, "warm": int(warm),
-                  "warmup": ["bash", "-c", warmup],
-                  "egress": connect_egress if n >= CONNECT_FROM else inject_egress if n >= INJECT_FROM else egress})
+                  "warmup": ["bash", "-c", warmup], "egress": pool_egress})
 conf = {
     "listen": LISTEN,
     "advertise_addr": LISTEN,
@@ -72,9 +95,13 @@ conf = {
     "max_claims": int(os.environ.get("CB_MAX_CLAIMS", "16")),
     "refill_concurrency": 1,
     "audit_log": True,
-    "egress_internal_allow": [f"{GATEWAY}/32:{GW_PORT},{CONNECT_PORT},{APT_PORT},{STATE_PORT}"],
+    # sandboxd blocks the node's own addresses; a box still reaches the console this host serves
+    "egress_internal_allow": [f"{GATEWAY}/32:{GW_PORT},{CONNECT_PORT},{APT_PORT},{STATE_PORT}",
+                              *(f"{a}/{a.max_prefixlen}:{','.join(map(str, WEB_PORTS))}" for a in public_addrs())],
+    "egress_conn_rate": CONN_RATE,
+    "disk_reserve": {"free": DISK_RESERVE},
     "egress_upstream": {"claim_env": "EGRESS_UPSTREAM", "allow": [f"{RESIDENTIAL}/32"]},
-    "egress_classes": [{"name": "cbdesk", "egress": egress}],
+    "egress_classes": [{"name": "cbdesk", "egress": tenant_egress}],
     "secrets": [{"name": "GW_KEY", "header": "Authorization"}, {"name": "CB_CONNECT_KEY", "header": "Authorization"}],
     "pools": pools,
 }

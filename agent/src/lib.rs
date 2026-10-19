@@ -20,6 +20,7 @@ pub mod plugins;
 pub mod prompts;
 pub mod route;
 pub mod runner;
+pub mod runs;
 pub mod screen;
 pub mod secrets;
 pub mod server;

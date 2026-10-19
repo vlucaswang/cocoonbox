@@ -271,6 +271,23 @@ func TestAddressDialsThePassiveRelay(t *testing.T) {
 	if got := fake.lastRelay(); got != "7443 upgrade tcp" {
 		t.Errorf("relay request = %q, want port 7443 with the root token and the tcp upgrade", got)
 	}
+	screen, err := ep.Screen(t.Context())
+	if err != nil {
+		t.Fatalf("Screen: %v", err)
+	}
+	defer screen.Close()
+	if got := fake.lastRelay(); got != "5900 upgrade tcp" {
+		t.Errorf("screen relay request = %q, want port 5900 with the tcp upgrade", got)
+	}
+	if _, err := screen.Write([]byte("RFB 003.008\n")); err != nil {
+		t.Fatalf("screen write: %v", err)
+	}
+	if err := screen.(interface{ CloseWrite() error }).CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite: %v", err)
+	}
+	if got, err := io.ReadAll(screen); err != nil || string(got) != "RFB 003.008\n" {
+		t.Errorf("screen echo after half-close = %q, %v", got, err)
+	}
 	if _, err := b.Address(t.Context(), "cb-missing"); !errors.Is(err, machines.ErrNotFound) {
 		t.Errorf("Address of an unknown machine = %v", err)
 	}

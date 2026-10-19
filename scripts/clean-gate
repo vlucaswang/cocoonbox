@@ -80,7 +80,11 @@ exit($hits ? 1 : 0);
 
 deps() {
 	local bad=0
-	if grep -n -E "^name = \"(enigo|$CG_RUNTIME[a-z_-]*)\"\$|^source = \"(git\+|path\+)" "$ROOT/agent/Cargo.lock"; then bad=1; fi
+	for lock in "$ROOT/agent/Cargo.lock" "$ROOT/deskhost/Cargo.lock"; do
+		[ -r "$lock" ] || { echo "clean-gate deps: ${lock#"$ROOT"/} missing" >&2; bad=1; continue; }
+		if grep -n -E "^name = \"(enigo|$CG_RUNTIME[a-z_-]*)\"\$|^source = \"path\+" "$lock" | sed "s|^|${lock#"$ROOT"/}:|" | grep .; then bad=1; fi
+		if grep -n -E '^source = "git\+' "$lock" | grep -v -E '^[0-9]+:source = "git\+https://github\.com/loomhand/shuttle\?tag=v[0-9]+\.[0-9]+\.[0-9]+#[0-9a-f]{40}"$' | sed "s|^|${lock#"$ROOT"/}:|" | grep .; then bad=1; fi
+	done
 	if grep -n -i -E "$CG_VENDOR" "$ROOT/api/go.mod" "$ROOT/api/go.sum"; then bad=1; fi
 	if grep -n -i -E "\"location\" : \"[^\"]*$CG_VENDOR|url: \"[^\"]*$CG_VENDOR|path: \"[^\"]*${CG_VENDOR:0:5}" "$ROOT/macos/Package.resolved" "$ROOT/macos/Package.swift"; then bad=1; fi
 	if git -C "$ROOT" grep -n -i -E "https?://[^ \"]*$CG_VENDOR|@$CG_VENDOR-ai/" -- image; then bad=1; fi

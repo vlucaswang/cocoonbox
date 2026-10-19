@@ -41,11 +41,10 @@ func (d Defaults) offered(ref string) (string, bool) {
 	if ref == "" || ref == d.Image || slices.Contains(d.RebaseImages, ref) {
 		return cmp.Or(ref, d.Image), true
 	}
-	if strings.Contains(ref, ":") {
+	if familyOf(ref) != ref {
 		return "", false
 	}
-	latest := d.latest(ref + ":")
-	return latest, strings.HasPrefix(latest, ref+":")
+	return d.newest(ref)
 }
 
 // kept returns image while it is offered, else what a box on image upgrades to with the user's own image own.
@@ -56,21 +55,50 @@ func (d Defaults) kept(own, image string) string {
 	return d.upgrade(own, image)
 }
 
-// upgrade is the image a box on image upgrades to with the user's own image own: own, else the newest image of image's family.
+// upgrade is the image a box on image upgrades to: own when it is of image's family, else the newest image of that family.
 func (d Defaults) upgrade(own, image string) string {
-	return cmp.Or(own, d.latest(image))
+	if own != "" && familyOf(own) == familyOf(image) {
+		return own
+	}
+	return d.latest(image)
 }
 
-// latest is the newest image of image's family (the name before ':'): the default image for its family, else the first rebase image of that family.
+// latest is the newest offered image of image's family, else image itself; empty is the default image.
 func (d Defaults) latest(image string) string {
-	family, _, _ := strings.Cut(image, ":")
-	if def, _, _ := strings.Cut(d.Image, ":"); image == "" || family == def {
+	if image == "" {
 		return d.Image
 	}
-	if i := slices.IndexFunc(d.RebaseImages, func(r string) bool { return strings.HasPrefix(r, family+":") }); i >= 0 {
-		return d.RebaseImages[i]
+	if newest, ok := d.newest(familyOf(image)); ok {
+		return newest
 	}
-	return d.Image
+	return image
+}
+
+// newest is the newest offered image of family: the default image for its family, else the first rebase image of it.
+func (d Defaults) newest(family string) (string, bool) {
+	if familyOf(d.Image) == family {
+		return d.Image, true
+	}
+	i := slices.IndexFunc(d.RebaseImages, func(r string) bool { return familyOf(r) == family })
+	if i < 0 {
+		return "", false
+	}
+	return d.RebaseImages[i], true
+}
+
+func (d Defaults) choices() string {
+	return strings.Join(slices.Concat([]string{d.Image}, d.RebaseImages), ", ") + ", or the family of one (the name before the tag's ':' after the last '/')"
+}
+
+// images lists the default image, then each rebase image once.
+func (d Defaults) images() []string {
+	images := []string{d.Image}
+	for _, image := range d.RebaseImages {
+		if !slices.Contains(images, image) {
+			images = append(images, image)
+		}
+	}
+	return images
 }
 
 // Registry keeps each user's boxes and their names; users.Service is the production one.
@@ -241,7 +269,7 @@ func (s *Service) List(ctx context.Context, _ *controlv1.ListBoxesRequest) (*con
 	if err != nil {
 		return nil, serviceError(ctx, log.WithFunc("boxes.Service.List").WithField("user", user), err, "list boxes")
 	}
-	resp := &controlv1.ListBoxesResponse{}
+	resp := &controlv1.ListBoxesResponse{OfferedImages: s.defaults.images()}
 	for _, b := range s.registry.Boxes(user) {
 		resp.Boxes = append(resp.Boxes, s.toBox(ctx, user, b.ID, current[b.ID]))
 	}
@@ -455,11 +483,8 @@ func (s *Service) ownImage(user string) string {
 	if image == "" || image == s.defaults.Image || slices.Contains(s.defaults.RebaseImages, image) {
 		return image
 	}
-	family, _, _ := strings.Cut(image, ":")
-	if newest := s.defaults.latest(image); strings.HasPrefix(newest, family+":") {
-		return newest
-	}
-	return ""
+	newest, _ := s.defaults.newest(familyOf(image))
+	return newest
 }
 
 // lockStarts serializes the requests that may start or delete a machine of user, in every api with a shared table.
@@ -603,4 +628,12 @@ func serviceError(ctx context.Context, logger *log.Fields, err error, action str
 		logger.Error(ctx, err, action)
 		return status.Errorf(codes.Unavailable, "%s failed", action)
 	}
+}
+
+func familyOf(image string) string {
+	name := strings.LastIndexByte(image, '/') + 1
+	if tag := strings.IndexByte(image[name:], ':'); tag >= 0 {
+		return image[:name+tag]
+	}
+	return image
 }

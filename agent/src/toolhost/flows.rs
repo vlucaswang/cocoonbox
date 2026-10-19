@@ -18,6 +18,8 @@ const MAX_NAME: usize = 96;
 const EVENT_HEADER: usize = 16;
 const EVENT_BUF: usize = 64 << 10;
 
+pub static INDEX_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[derive(Deserialize)]
 struct NameArgs {
     name: String,
@@ -222,6 +224,7 @@ pub async fn watch(workspace: PathBuf, writes: watch::Sender<u64>) -> Result<(),
 async fn prune(dir: &Path) -> Result<(), String> {
     use tokio::io::AsyncWriteExt;
 
+    let _index = INDEX_LOCK.lock().await;
     let path = dir.join(INDEX);
     let index = match tokio::fs::read_to_string(&path).await {
         Ok(index) => index,

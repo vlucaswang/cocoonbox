@@ -8,7 +8,7 @@ on:
     branches: [main]
     paths: &paths
       - "image/android/**"
-      - "image/desk/rootfs/opt/desk/lib/**"
+      - "image/desk/shuttle.sh"
       - ".github/workflows/android-base.yml"
   pull_request:
     paths: *paths

@@ -29,8 +29,10 @@ usage: cocoonbox <command> [options]
   status [--json]                       show the box
   ensure | save                         wake or save the box, with progress
   hibernate [--yes]                     hibernate the box, with progress
-  upgrade [--yes]                       move the box to the latest desktop image
-  box create NAME [--json]              create another box and wait until it runs
+  upgrade [--yes]                       move the box to the latest image of its kind
+  box create NAME [--image IMAGE] [--json]
+                                        create another box and wait until it runs; IMAGE is an offered image
+                                        or its family, such as cbdroid for an Android phone
   box schedule set BOX --cron "M H DOM MON DOW" --tz ZONE [--awake-for 15m] [--json]
                                         wake BOX from hibernation a minute before each time of the cron in
                                         ZONE, an IANA zone; after --awake-for (1m to 1h) it hibernates again
@@ -105,7 +107,7 @@ and take the default box the app sets.
 let arguments = Array(CommandLine.arguments.dropFirst())
 let command = arguments.first ?? "help"
 let flags = Set(arguments.dropFirst().filter { $0.hasPrefix("--") })
-let valuedFlags: Set = ["--awake-for", "--box", "--cron", "--days", "--dir", "--endpoint", "--handover", "--invite", "--kind", "--token", "--token-file", "--tz", "--wait"]
+let valuedFlags: Set = ["--awake-for", "--box", "--cron", "--days", "--dir", "--endpoint", "--handover", "--image", "--invite", "--kind", "--token", "--token-file", "--tz", "--wait"]
 let words = positional(arguments.dropFirst())
 
 // rsh exits 255 on its own failures, so they differ from the command's exit codes.
@@ -276,7 +278,7 @@ func lifecycle(_ command: String) async {
             printBox(try await selectedBox(connection), json: flags.contains("--json"))
         case "upgrade":
             guard let box = try await selectedBox(connection) else { fail("no box yet") }
-            guard !box.latestImage.isEmpty, box.latestImage != box.image else { return print("already on the latest desktop (\(box.image))") }
+            guard !box.latestImage.isEmpty, box.latestImage != box.image else { return print("already on the latest image (\(box.image))") }
             guard flags.contains("--yes") else {
                 let busy = await working(connection, box).map { " \($0); the upgrade restarts it from its last hand-over." } ?? ""
                 fail("upgrading to \(box.latestImage) restarts running programs; files, logins and agent history are kept.\(busy) Run again with --yes.")
@@ -295,12 +297,17 @@ func lifecycle(_ command: String) async {
 func boxCommand() async {
     if words.first == "schedule" { return await scheduleCommand() }
     guard words.first == "create", let name = words.dropFirst().first else {
-        fail("usage: cocoonbox box create NAME")
+        fail("usage: cocoonbox box create NAME [--image IMAGE]")
+    }
+    let image = value(of: "--image")
+    if arguments.contains(where: { $0.hasPrefix("--image=") })
+        || arguments.contains("--image") && (image?.isEmpty != false || image?.hasPrefix("--") == true) {
+        fail("usage: cocoonbox box create NAME [--image IMAGE]")
     }
     let connection = connection()
     defer { connection.close() }
     do {
-        let response = try await connection.createBox(name: name)
+        let response = try await connection.createBox(name: name, image: image ?? "")
         if response.hasOperation, !response.operation.id.isEmpty { await follow(connection, response.operation.id) }
         printBox(try await connection.listBoxes().first { $0.id == response.box.id }, json: flags.contains("--json"))
     } catch {

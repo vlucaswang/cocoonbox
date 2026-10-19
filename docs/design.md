@@ -246,7 +246,7 @@ The adversary is the box's own user (`user`, unprivileged), or root inside one b
 **Credential format.** `x-cocoonbox-credential: v1.<b64url(key_id|box_id|wake_id|exp_unix)>.<b64url(ed25519 signature over the first part)>`: base64url without padding, `|`-separated fields.
 - `key_id` is the first 16 hex of sha256(public key).
 - The edge caches one credential per (box, `wake_id`) and re-signs when less than 2 min of `exp` remain, so the hot path is a map lookup; a stream signs once at open.
-- The edge strips any client-sent `x-cocoonbox-credential` on gRPC and MCP, as it does `x-cocoonbox-edge-token` today. During the switch it sends both headers until the agent drops `EDGE_TOKEN`.
+- The edge strips any client-sent `x-cocoonbox-credential` on gRPC and MCP, as it does `x-cocoonbox-edge-token`. During the switch it sent both headers until no image set `EDGE_TOKEN`; the agent has since dropped the token.
 
 **Where the agent learns its identity and the edge key.** On every boot and wake, the api writes `/run/cocoonbox-identity/identity`, `{"box_id":…,"wake_id":<random>,"key_id":…,"public_key":<ed25519>}`, through sandboxd exec (silkd over vsock, running as root in the guest).
 - The directory is root 0755 and the file root 0644, both tmpfs. It is not `/run/cocoonbox`: that directory is `user:cbagent 2770` for the toolhost socket, so `user` could replace a file in it and point the agent at its own key.
@@ -514,7 +514,7 @@ Leases and tiers:
 
 ### 14.4 Edge → agent: `Address` returns a dialer
 
-The agent is reachable only through `GET /v1/sandboxes/{id}/ports/7443` with `Upgrade: tcp`. There is no IP. `Session.Screen` already carries the RFB bytes inside the 7443 gRPC stream, so no second port is relayed.
+The agent is reachable only through `GET /v1/sandboxes/{id}/ports/7443` with `Upgrade: tcp`. There is no IP. The edge serves `Session.Screen` itself through `GET /v1/sandboxes/{id}/ports/5900`, the box's RFB server; no other port is relayed.
 
 The interface change, backend-neutral:
 
@@ -573,7 +573,7 @@ The service layer computes each incarnation's identity and hands it to the backe
 - Consequences of the none lane:
   - No UDP. Chrome falls back from QUIC to TCP, and WebRTC media is degraded.
   - Raw TCP (git over ssh) needs the pool policy's `socks5: true` door.
-  - Policy: the gw rule, then `*`. The SSRF guard keeps other cb VMs and host ports unreachable, which M4.5 measured as 502.
+  - Policy: the gw, Connect and apt cache rules, then `*` on ports 22, 80 and 443 only, so mail ports and every other port are closed. The SSRF guard keeps other cb VMs and host ports unreachable, which M4.5 measured as 502.
 - **VMM crash (#269).**
   - The claim is cold-booted from its own disk within the 10 s liveness pass plus the boot, under the same id and token.
   - Lost: memory, the running turn, Chrome's open tabs and the tmpfs files, although env and identity are re-delivered. Kept: synced files, `/workspace` and `agent.db`.
@@ -1757,7 +1757,6 @@ Open (deferred to the backlog):
 - **Allowlist the tools the mode-A runner forwards** (agent). The loop passes any tool name the model emits to the toolhost, so a model that guesses an internal call (`state_*`, `browser_close`, `desktop_save`) can invoke it. Since v10 the model's shell has sudo, so this adds no privilege inside the box, but the dispatcher should still forward only the tools it advertised. Found during the v10 acceptance (2026-10-01).
 - **M4.9 proactive agents** (§15): the whole build plan (9a–f) waits here, with its decisions settled in §15.12.
 - **Keychain prompt on every app rebuild.** The ad hoc signature changes with each build, so the login keychain asks again. With an Apple Developer account, sign with Developer ID, which also enables notarization, and move the token to the data protection keychain behind Touch ID (`SecAccessControl` `.userPresence`). Until then the prompt stays.
-- **Retire the agent's EDGE_TOKEN fallback** (agent). The agent still admits the retired shared edge token (`EDGE_TOKEN` env, header `x-cocoonbox-edge-token`; agent/src/config.rs, identity.rs) when no identity file is present. Since v8 no image sets it and the edge sends only the signed credential, so the path is dead. Remove it, and move the tests that spawn `serve` (credential.rs, shutdown.rs) to a test identity file through `CB_IDENTITY_PATH` (82053be).
 - **Batch small chunks in state transfers** (agent state layer and api). Restore is one presigned GET per chunk through the sandboxd proxy, so time grows with the chunk count, not the bytes: a 1298-chunk restore took about 11 s against 2 s for a 519-chunk one (2026-10-01). Pack small chunks into larger objects (for example, a pack per save with an index in the manifest, ranges read with one GET), and raise the transfer concurrency. Measure the restore of a 1300-chunk box before and after.
 - **gw: look up keys by owner, and store a hash instead of the key** (upstream gw mechanism; cocoonstack/gateway#137 and #138). Done 2026-10-01: the bench host runs gw HEAD 3ab7a722, which filters `GET /admin/keys?owner=` before paging and stores and reports keys by `ak_id` only. The api lists a machine's keys by owner, lets gw generate each key and revokes by `ak_id`.
 
@@ -2059,7 +2058,7 @@ Decided 2026-10-02, revised 2026-10-03. A box owner shares one box through a sha
 - **Share:** one per box, created by the owner in the app or the console. It always expires: 24 h by default, and the owner picks a longer expiry when creating it. The owner can revoke it or regenerate it at any time. Revoking, regenerating, expiry and deleting the box all cut every open share session at once.
 - **Who may use it:** anyone holding the link, or only named cocoonbox users. An open share needs no account. A named share also needs the caller's user token. Both reach the box over the same connection.
 - **Link:** `https://<endpoint>/cb/s/#<secret>`, a 128-bit random secret. The secret sits in the fragment, so it reaches neither the server's access logs nor a `Referer`. The page reads it and sends it on its WebSocket. The api looks it up by its SHA-256 and keeps it sealed so the owner can see the link again (23.5).
-- **Live view:** the page shows the box screen with noVNC, view-only. The api bridges a WebSocket to the box's existing `Session.Screen` RFB stream and drops every client input message. The owner can use the same page.
+- **Live view:** the page shows the box screen with noVNC, view-only. The api bridges a WebSocket to the box's RFB server, which it reaches through the sandboxd port relay to 5900, and drops every client input message. The owner can use the same page.
 - **Guest agents:** an MCP endpoint per share. The guest's CLI uses the share secret as its bearer, plus the guest's own user token for a named share.
   - **Read by default:** the read-only tools (screenshot and `computer_state`, file read and list, the browser page snapshot). File read and list reach only `/workspace` (23.6).
   - **Write:** the owner turns on "allow write" for the share in the app or the console. That adds every other in-box tool. It takes effect on the next call, and turning it off does too. Write includes `shell`, so it cannot be confined: the app and the console warn next to the switch that it hands the guest every login in the box.
@@ -2120,7 +2119,7 @@ Decisions made while building, on top of 23.1 and 23.2:
 - **Share page.**
   - `/cb/s/` is static: noVNC v1.7.0 `core/` and `vendor/pako/`, unmodified, under `console/static/s/novnc/`, with `LICENSE.txt` and the license texts.
   - The page opens `wss://<host>/cb/s/ws`. The api checks that its `Origin` host is the page's host. The page sends the secret from the fragment as the first text message; nothing travels in the URL.
-  - The api answers `{"ok":true}` or `{"error":…, "code":…}`, then bridges binary RFB to `Session.Screen` with the share principal.
+  - The api answers `{"ok":true}` or `{"error":…, "code":…}`, then bridges binary RFB to the box's RFB server through the sandboxd port relay to 5900, view-only both ways.
   - A named share takes the viewer from the console session cookie (`cb_session`, `Path=/cb/`, `SameSite=Strict`, sent on the same-origin WebSocket). Without one, the page asks the viewer to sign in at `/cb/`.
   - CSP for `/cb/s/`: `default-src 'self'; img-src 'self' data:; connect-src 'self' wss://<host>; frame-ancestors 'none'`. `data:` images are noVNC's JPEG rects and cursor.
 - **View-only filter**, parsed message by message in both directions without decoding pixels:

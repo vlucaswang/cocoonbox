@@ -7,8 +7,13 @@ modinfo -k "$kver" binder_linux >/dev/null
 modinfo -k "$kver" btrfs >/dev/null
 test -s /usr/local/share/cocoonbox/cb-ui.jar
 ldd /usr/local/bin/scrcpy-rfb | grep -q 'not found' && exit 1
+test -s /usr/local/share/scrcpy/scrcpy-server-shell.jar
+grep -q -- '--clipboard-port "$CLIP_PORT"' /usr/local/lib/cocoonbox/remoteview
+grep -q '^done &$' /usr/local/lib/cocoonbox/remoteview
+grep -qx 'wait -n "$server_pid" "$rfb_pid"' /usr/local/lib/cocoonbox/remoteview
 command -v adb dnscrypt-proxy redsocks mkfs.btrfs node git >/dev/null
-test -f /opt/desk/lib/gui_plan.mts
+for f in desk gui_plan png; do test -s /opt/desk/lib/$f.mts; done
+grep -qx 'Environment=TOOLHOST_SOCKET=/run/cocoonbox/toolhost.sock' /etc/systemd/system/cocoonbox-toolhost.service
 test -f /opt/android/AGENTS.md
 test -d /var/lib/redroid-data && test -z "$(ls -A /var/lib/redroid-data)"
 cfgs=(/var/lib/docker/containers/*/config.v2.json)

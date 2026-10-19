@@ -14,7 +14,7 @@ struct OffloadedHeader: View {
             Menu {
                 Button("Install Claude Code Plugin…") { model.installClaudePlugin() }
                 Divider()
-                ForEach(model.boxes, id: \.id) { box in
+                ForEach(model.boxes.filter { model.wording($0).browser }, id: \.id) { box in
                     Menu(box.name) {
                         ForEach(OffloadKind.allCases, id: \.self) { kind in
                             Button("Install \(kind.title) in Box…") { model.boxCLISheet = .install(kind, box) }

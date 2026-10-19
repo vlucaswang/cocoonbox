@@ -1,8 +1,8 @@
 [Unit]
-Description=Run the cocoonbox PostgreSQL dump nightly
+Description=Run the cocoonbox PostgreSQL dump every 6 hours
 
 [Timer]
-OnCalendar=*-*-* 03:30:00 UTC
+OnCalendar=*-*-* 03/6:30:00 UTC
 RandomizedDelaySec=10min
 Persistent=true
 

@@ -85,10 +85,13 @@ pub struct Runtime {
 impl Runtime {
     /// Opens the store, closes turns left open by a previous process, and builds the runtime over `model` and `tools`.
     pub async fn open(
-        cfg: ServeConfig,
+        mut cfg: ServeConfig,
         model: Arc<dyn Model>,
         tools: Arc<dyn Tools>,
     ) -> Result<Arc<Self>, String> {
+        if !cfg.automation.plans() {
+            cfg.plugins.clear();
+        }
         std::fs::create_dir_all(&cfg.state_dir)
             .map_err(|e| format!("create {}: {e}", cfg.state_dir.display()))?;
         let journal = Arc::new(Journal::new(Store::open(&cfg.state_dir.join("agent.db"))?));

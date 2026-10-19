@@ -8,8 +8,8 @@ import Foundation
 public enum Plugin {
     public static let name = "cocoonbox"
     public static let marketplace = "cocoonbox"
-    static let version = "0.15.0"
-    static let summary = "Drive your cocoonbox cloud desktop: its shell, files, browser and screen, and its lifecycle (wake, save, upgrade, hibernate); move a coding task into it and back."
+    static let version = "0.16.0"
+    static let summary = "Drive your cocoonbox, a cloud desktop or Android phone: its shell, files and screen, a desktop's browser, and its lifecycle (wake, save, upgrade, hibernate); move a coding task into it and back."
 
     // files maps paths under the marketplace root to their contents.
     public static func files(command: String) -> [String: String] {
@@ -41,7 +41,7 @@ public enum Plugin {
             "\(name)/skills/cocoonbox-offload/SKILL.md": offloadSkill(command: command),
             "\(name)/commands/status.md": slash("Show the state of my cocoonbox", "Call the cocoonbox tool box_status and tell me the state, the image, whether an upgrade is available and when my files were last saved."),
             "\(name)/commands/wake.md": slash("Wake my cocoonbox", "Call the cocoonbox tool box_ensure and tell me when the box is running."),
-            "\(name)/commands/save.md": slash("Save my cocoonbox now", "Call the cocoonbox tool box_save. Tell me it closes the box's browser during the save, and report the result."),
+            "\(name)/commands/save.md": slash("Save my cocoonbox now", "Call the cocoonbox tool box_save. On a desktop box, tell me it closes the box's browser during the save. Report the result."),
             "\(name)/commands/sleep.md": slash("Hibernate my cocoonbox", "Call the cocoonbox tool box_hibernate and tell me when the box is hibernated."),
             "\(name)/commands/offload.md": slash("Move this coding task into my cocoonbox, where an agent keeps working on it", "Use the cocoonbox-offload skill: OFFLOAD this task to my box. $ARGUMENTS"),
             "\(name)/commands/back.md": slash("Bring the task back from my cocoonbox and continue it here", "Use the cocoonbox-offload skill: BACK. $ARGUMENTS"),
@@ -65,17 +65,17 @@ public enum Plugin {
     static let skill = """
     ---
     name: cocoonbox
-    description: Work on the user's cocoonbox cloud desktop (a Linux desktop in the cloud, not this Mac) through the cocoonbox MCP tools. Use when the user asks for something on their box, their cloud desktop or cocoonbox.
+    description: Work on the user's cocoonbox (a Linux desktop or an Android phone in the cloud, not this Mac) through the cocoonbox MCP tools. Use when the user asks for something on their box, their cloud desktop, their cloud phone or cocoonbox.
     ---
 
-    The cocoonbox tools act on the user's cocoonbox cloud desktop, not on this Mac. Local files are not the target.
+    The cocoonbox tools act on the user's cocoonbox, a cloud desktop or Android phone, not on this Mac. Local files are not the target.
 
     - Check `box_status` first when the state matters. A box tool wakes a hibernated box by itself; `box_ensure` wakes it on purpose.
     - The user may have several boxes. `box_list` lists them; every other tool takes `box`, a box name or id, and acts on the session's default box without it. Only a limited number of boxes run at once: hibernate one before waking another when a tool says so.
     - `box_create` adds a box. `box_delete` removes one and needs `box` and `confirm: true`, so ask the user first.
-    - Use `shell`, `read_file`, `write_file`, `edit_file` and `list_dir` for files and commands on the box, the `browser_*` tools for its browser, and `computer_state`, `computer_act` and `screenshot` for its desktop.
+    - Use `shell`, `read_file`, `write_file`, `edit_file` and `list_dir` for files and commands on the box, the `browser_*` tools for its browser where the box has them, and `computer_state`, `computer_act` and `screenshot` for its screen. On an Android box, `shell` runs on the Ubuntu host with `adb` connected to the phone.
     - After a GUI action, take a `screenshot` to confirm it worked.
-    - Call `box_save` before the user leaves for a long time. It closes the box's browser during the save.
+    - Call `box_save` before the user leaves for a long time. On a desktop box it closes the browser during the save.
     - `box_upgrade` restarts running programs and keeps files, logins and agent history; ask the user first, then call it with `confirm: true`.
     - Call `box_hibernate` when the user is done.
     - If `box_hibernate` or `box_ensure` times out, the operation continues on the box; call `box_status` and wait until the state settles.
@@ -87,7 +87,7 @@ public enum Plugin {
         """
         ---
         name: cocoonbox-offload
-        description: Hand this coding task to an agent in the user's cocoonbox (their cloud desktop) and take it back. Use when the user says offload, "move this to my box", "keep working while I'm away", "I'm back" or "bring it back", or when a message is exactly OFFLOAD or BACK.
+        description: Hand this coding task to an agent in the user's cocoonbox (their box in the cloud) and take it back. Use when the user says offload, "move this to my box", "keep working while I'm away", "I'm back" or "bring it back", or when a message is exactly OFFLOAD or BACK.
         ---
 
         The agent in the box starts fresh. It knows only what your hand-over says, plus the repo.

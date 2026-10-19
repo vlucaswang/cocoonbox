@@ -452,9 +452,17 @@ struct BoxSwitcher: View {
         .help("Switch, create, rename or delete boxes")
         .alert("New box", isPresented: $model.showNewBox) {
             TextField("Name", text: $name)
-            Button("Create") {
-                model.createBox(name: name)
-                name = ""
+            if model.imageChoices.isEmpty {
+                Button("Create") {
+                    model.createBox(name: name)
+                    name = ""
+                }
+            }
+            ForEach(model.imageChoices, id: \.image) { choice in
+                Button("Create \(choice.label)") {
+                    model.createBox(name: name, image: choice.image)
+                    name = ""
+                }
             }
             Button("Cancel", role: .cancel) { name = "" }
         } message: {
@@ -528,7 +536,7 @@ struct StateLayerControls: View {
                 Button("Save now") { model.confirmSave = true }
                     .controlSize(.small)
                     .disabled(!idle || !model.boxRunning)
-                    .help("Save files, logins and agent history now. The box's browser closes during the save.")
+                    .help(model.wording.saveHelp)
             }
             if model.upgradeAvailable {
                 Label("Update available: \(box.latestImage)", systemImage: "arrow.up.circle")
@@ -536,9 +544,9 @@ struct StateLayerControls: View {
                     .foregroundStyle(.blue)
             }
             HStack {
-                Button("Upgrade desktop…") { model.confirmUpgrade = true }
+                Button("Upgrade \(model.wording.noun)…") { model.confirmUpgrade = true }
                     .disabled(!idle || !model.upgradeAvailable)
-                    .help(model.upgradeAvailable ? "Move this box to \(box.latestImage)" : "Already on the latest desktop")
+                    .help(model.upgradeAvailable ? "Move this box to \(box.latestImage)" : "Already on the latest \(model.wording.noun)")
                 Button("Restore files…") { model.showTimeCapsule = true }
                     .disabled(box.lastSavedAtMs == 0)
                     .help("Copy files and folders from an earlier save into ~/Restored")
@@ -549,9 +557,9 @@ struct StateLayerControls: View {
             Button("Save") { model.saveNow() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Files, logins and agent history are saved to storage. The browser in your box closes during the save.")
+            Text(model.wording.saveMessage)
         }
-        .alert("Upgrade the desktop to \(box.latestImage)?", isPresented: $model.confirmUpgrade) {
+        .alert("Upgrade the \(model.wording.noun) to \(box.latestImage)?", isPresented: $model.confirmUpgrade) {
             Button("Upgrade") { model.upgrade() }
             Button("Cancel", role: .cancel) {}
         } message: {

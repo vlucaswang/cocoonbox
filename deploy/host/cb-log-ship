@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""usage: cb-log-ship; ships the lines sandboxd appended to its audit and usage journals since the last run, gzipped, to the
+cocoonbox-logs bucket through cb-s3."""
+
+import gzip
+import json
+import os
+import socket
+import subprocess
+import sys
+import time
+
+DATA = "/srv/cb/sbx/data"
+JOURNALS = ("audit.jsonl", "usage.jsonl")
+BUCKET = "cocoonbox-logs"
+STATE = "/var/lib/cb-log-ship/state.json"
+MAX_CHUNK = 64 << 20
+
+
+def put(key, body):
+    subprocess.run(["cb-s3", "put", BUCKET, key, "-"], input=gzip.compress(body), check=True)
+
+
+def whole_lines(path, offset):
+    with open(path, "rb") as f:
+        f.seek(offset)
+        data = f.read(MAX_CHUNK)
+    return data[:data.rfind(b"\n") + 1]
+
+
+def drain(host, name, path, pos):
+    while chunk := whole_lines(path, pos["offset"]):
+        day = time.strftime("%Y/%m/%d", time.gmtime())
+        put(f"sandboxd/{host}/{name.removesuffix('.jsonl')}/{day}/{pos['ino']}-{pos['offset']:012d}.jsonl.gz", chunk)
+        pos["offset"] += len(chunk)
+
+
+def ship(host, name, pos):
+    path = os.path.join(DATA, name)
+    ino = os.stat(path).st_ino
+    if pos.get("ino") not in (None, ino):
+        rotated = path + ".1"
+        if os.path.exists(rotated) and os.stat(rotated).st_ino == pos["ino"]:
+            drain(host, name, rotated, pos)
+        else:
+            subprocess.run(["cb-alert", f"cb-log-ship: {name} rotated twice since the last run; lines lost"], check=False)
+        pos.clear()
+    pos.setdefault("ino", ino)
+    pos.setdefault("offset", 0)
+    drain(host, name, path, pos)
+
+
+def main():
+    host = socket.gethostname().split(".")[0]
+    try:
+        with open(STATE) as f:
+            state = json.load(f)
+    except FileNotFoundError:
+        state = {}
+    failed = []
+    for name in JOURNALS:
+        pos = state.setdefault(name, {})
+        try:
+            ship(host, name, pos)
+        except (OSError, subprocess.CalledProcessError) as e:
+            failed.append(f"{name}: {e}")
+        os.makedirs(os.path.dirname(STATE), mode=0o700, exist_ok=True)
+        with open(STATE + ".tmp", "w") as f:
+            json.dump(state, f)
+        os.replace(STATE + ".tmp", STATE)
+    if failed:
+        subprocess.run(["cb-alert", "cb-log-ship failed: " + "; ".join(failed)], check=False)
+        sys.exit(1)
+
+
+main()

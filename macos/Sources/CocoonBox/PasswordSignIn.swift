@@ -7,12 +7,14 @@ struct PasswordSignInButton: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        Button {
-            model.showPasswordSignIn = true
-        } label: {
-            Label("Sign in with Passwords", systemImage: "key.fill")
+        if model.wording.browser {
+            Button {
+                model.showPasswordSignIn = true
+            } label: {
+                Label("Sign in with Passwords", systemImage: "key.fill")
+            }
+            .help("Fill the sign-in page in the box with a password saved on this Mac")
         }
-        .help("Fill the sign-in page in the box with a password saved on this Mac")
     }
 }
 

@@ -63,6 +63,55 @@ public nonisolated enum Cocoonbox_Agent_V1_ExecSignal: SwiftProtobuf.Enum, Swift
 
 }
 
+/// Automation is what the box's screen is, from the guide its image holds.
+public nonisolated enum Cocoonbox_Agent_V1_Automation: SwiftProtobuf.Enum, Swift.CaseIterable {
+  public typealias RawValue = Int
+  case unspecified // = 0
+
+  /// A desktop driven through cua-driver only.
+  case plain // = 1
+
+  /// A desktop that runs GUI plans and scripts on the desk runtime.
+  case desk // = 2
+
+  /// An Android phone in the box, driven through adb.
+  case android // = 3
+  case UNRECOGNIZED(Int)
+
+  public init() {
+    self = .unspecified
+  }
+
+  public init?(rawValue: Int) {
+    switch rawValue {
+    case 0: self = .unspecified
+    case 1: self = .plain
+    case 2: self = .desk
+    case 3: self = .android
+    default: self = .UNRECOGNIZED(rawValue)
+    }
+  }
+
+  public var rawValue: Int {
+    switch self {
+    case .unspecified: return 0
+    case .plain: return 1
+    case .desk: return 2
+    case .android: return 3
+    case .UNRECOGNIZED(let i): return i
+    }
+  }
+
+  // The compiler won't synthesize support with the UNRECOGNIZED case.
+  public static let allCases: [Cocoonbox_Agent_V1_Automation] = [
+    .unspecified,
+    .plain,
+    .desk,
+    .android,
+  ]
+
+}
+
 public nonisolated enum Cocoonbox_Agent_V1_OffloadEntry: SwiftProtobuf.Enum, Swift.CaseIterable {
   public typealias RawValue = Int
   case unspecified // = 0
@@ -368,6 +417,8 @@ public nonisolated struct Cocoonbox_Agent_V1_HelloResponse: Sendable {
 
   public var agentVersion: String = String()
 
+  /// The screen size the image boots at: 1280x800 on a desktop, 720x1280 on
+  /// Android. A later change in the box, such as `wm size`, is not reflected.
   public var screenWidth: UInt32 = 0
 
   public var screenHeight: UInt32 = 0
@@ -375,6 +426,8 @@ public nonisolated struct Cocoonbox_Agent_V1_HelloResponse: Sendable {
   public var models: [String] = []
 
   public var defaultMainModel: String = String()
+
+  public var automation: Cocoonbox_Agent_V1_Automation = .unspecified
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -728,6 +781,10 @@ fileprivate nonisolated let _protobuf_package = "cocoonbox.agent.v1"
 
 nonisolated extension Cocoonbox_Agent_V1_ExecSignal: SwiftProtobuf._ProtoNameProviding {
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0EXEC_SIGNAL_UNSPECIFIED\0\u{1}EXEC_SIGNAL_INT\0\u{1}EXEC_SIGNAL_TERM\0")
+}
+
+nonisolated extension Cocoonbox_Agent_V1_Automation: SwiftProtobuf._ProtoNameProviding {
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0AUTOMATION_UNSPECIFIED\0\u{1}AUTOMATION_PLAIN\0\u{1}AUTOMATION_DESK\0\u{1}AUTOMATION_ANDROID\0")
 }
 
 nonisolated extension Cocoonbox_Agent_V1_OffloadEntry: SwiftProtobuf._ProtoNameProviding {
@@ -1084,7 +1141,7 @@ nonisolated extension Cocoonbox_Agent_V1_HelloRequest: SwiftProtobuf.Message, Sw
 
 nonisolated extension Cocoonbox_Agent_V1_HelloResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".HelloResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}agent_version\0\u{3}screen_width\0\u{3}screen_height\0\u{1}models\0\u{3}default_main_model\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}agent_version\0\u{3}screen_width\0\u{3}screen_height\0\u{1}models\0\u{3}default_main_model\0\u{1}automation\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1097,6 +1154,7 @@ nonisolated extension Cocoonbox_Agent_V1_HelloResponse: SwiftProtobuf.Message, S
       case 3: try { try decoder.decodeSingularUInt32Field(value: &self.screenHeight) }()
       case 4: try { try decoder.decodeRepeatedStringField(value: &self.models) }()
       case 5: try { try decoder.decodeSingularStringField(value: &self.defaultMainModel) }()
+      case 6: try { try decoder.decodeSingularEnumField(value: &self.automation) }()
       default: break
       }
     }
@@ -1118,6 +1176,9 @@ nonisolated extension Cocoonbox_Agent_V1_HelloResponse: SwiftProtobuf.Message, S
     if !self.defaultMainModel.isEmpty {
       try visitor.visitSingularStringField(value: self.defaultMainModel, fieldNumber: 5)
     }
+    if self.automation != .unspecified {
+      try visitor.visitSingularEnumField(value: self.automation, fieldNumber: 6)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -1127,6 +1188,7 @@ nonisolated extension Cocoonbox_Agent_V1_HelloResponse: SwiftProtobuf.Message, S
     if lhs.screenHeight != rhs.screenHeight {return false}
     if lhs.models != rhs.models {return false}
     if lhs.defaultMainModel != rhs.defaultMainModel {return false}
+    if lhs.automation != rhs.automation {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

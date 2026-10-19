@@ -20,6 +20,7 @@ Windows and elements come from the accessibility tree (AT-SPI), roles named as i
 | Call | Does |
 |---|---|
 | `windows()` | top-level windows `{id, title, role, pid, active}`; `focused()` the active one; a modal dialog the screen does not show also has `modal` (`hidden`, `off the screen` or `behind "TITLE"`) and `blocks`, the title of the window it blocks |
+| `wait(since, timeout_ms)` | waits until the window list differs from `since` (a `windows()` result), at most `timeout_ms`: `{changed, windows}` |
 | `snapshot(window?, {pid?, keys?})` | the elements of one window (default: the focused one) in tree order: `{ref, id, parent, depth, role, name, states, value?, bounds?}`; `states` holds `checked`, `disabled`, `focused`, `showing`, `selected`, `expanded` … |
 | `outline(window?)` | the same tree as text, one `- role "name" [checked] [id=ID]: "value"` line per element |
 | `find(name, {role?, window?})` | the elements named `name` (else containing it), ignoring case and punctuation |

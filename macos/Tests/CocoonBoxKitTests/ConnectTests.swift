@@ -9,7 +9,7 @@ import Testing
 // failures (design §16.3, §16.5). The box stays hibernated in the bridge tests.
 @Suite struct ConnectTests {
     nonisolated(unsafe) static let hub: [String: Any] = ["id": "mockhub", "account": "octo", "tools": [["name": "list_issues", "read_only": true], ["name": "create_issue"]]]
-    static let plain = ToolCatalog.control.compactMap { $0["name"] as? String } + ToolCatalog.boxNames
+    static let plain = ToolCatalog.control.compactMap { $0["name"] as? String } + ToolCatalog.boxFallback.compactMap { $0["name"] as? String }
 
     @Test func mergesConnectorToolsAndRoutesTheirCalls() async throws {
         let mock = try await MockBoxProcess()
@@ -68,7 +68,7 @@ import Testing
         defer { desk.close() }
         let names = try await desk.tools().compactMap { $0["name"] as? String }
         let boxTools = names.filter { ToolCatalog.boxNames.contains($0) || $0 == "script_run" }
-        #expect(boxTools.count == 13 && !names.contains("script_run"), "\(names)")
+        #expect(boxTools.count == ToolCatalog.boxFallback.count && !names.contains("script_run"), "\(names)")
     }
 
     @Test func aCbcoreDefaultBoxAddsItsOwnInstructionsAndACbdeskBoxAddsNone() async throws {
@@ -93,6 +93,30 @@ import Testing
         let again = try await BridgeClient(mock, box: cbdesk)
         defer { again.close() }
         #expect(again.instructions == Bridge.instructions)
+    }
+
+    @Test func anAndroidBoxListsTheFallbackUntilItAnswersThenItsOwnToolsAndInstructions() async throws {
+        let mock = try await MockBoxProcess()
+        defer { mock.stop() }
+        let phone = try await mock.connection.createBox(name: "phone", image: "cbdroid").box.id
+        #expect(await until(seconds: 10) { (try? await mock.connection.listBoxes())?.first { $0.id == phone }?.state == .running })
+        _ = try await mock.connection.hibernate(boxID: phone)
+        #expect(await until(seconds: 10) { (try? await mock.connection.listBoxes())?.first { $0.id == phone }?.state == .hibernated })
+
+        let fresh = try await BridgeClient(mock, box: "phone")
+        #expect(fresh.instructions == Bridge.instructions, "a phone that never answered adds no instructions")
+        let names = { (client: BridgeClient) in try await client.tools().compactMap { $0["name"] as? String } }
+        #expect(try await names(fresh) == Self.plain)
+        #expect(fresh.listChanged == 0)
+        _ = try await fresh.tool("shell", ["command": "true"])
+        #expect(await until { fresh.listChanged == 1 }, "the bridge sends tools/list_changed once the woken phone answers")
+        let live = try await names(fresh)
+        #expect(live.contains("gui_plan") && live.contains("script_run") && !live.contains { $0.hasPrefix("browser_") }, "\(live)")
+        fresh.close()
+
+        let again = try await BridgeClient(mock, box: "phone")
+        defer { again.close() }
+        #expect(again.instructions == Bridge.instructions + " The default box's own instructions follow. These tools act on an Android 16 phone (720x1280) that runs in a cloud computer: Ubuntu 24.04 with no desktop. shell has adb.")
     }
 
     @Test func aBoxMovedToAnotherImageGetsItsNewInstructions() async throws {
@@ -208,7 +232,9 @@ import Testing
         try await Self.core(mock)
         let core = try await BridgeClient(mock, box: "core1", client: "codex-mcp-client")
         defer { core.close() }
-        #expect(core.instructions == Bridge.codexInstructions)
+        #expect(core.instructions == Bridge.codexInstructions("Mock cbcore box: write one script with script_run for a multi-step task."))
+        #expect(core.instructions == "Mock cbcore box: write one script with script_run for a multi-step task. It is the user's cocoonbox, not this Mac: GUI work in an app goes to gui_plan; commands go to shell.")
+        #expect(Bridge.codexInstructions("These tools act on an Android 16 phone (720x1280) that runs in a cloud computer: Ubuntu 24.04 with no desktop. shell is one session.") == "These tools act on an Android 16 phone (720x1280) that runs in a cloud computer: Ubuntu 24.04 with no desktop. It is the user's cocoonbox, not this Mac: GUI work in an app goes to gui_plan; commands go to shell.")
     }
 
     @Test func anAppSwitchToABoxWithOtherToolsSendsListChanged() async throws {

@@ -155,6 +155,9 @@ message ListBoxesRequest {}
 
 message ListBoxesResponse {
   repeated Box boxes = 1;
+  // Images CreateBoxRequest.image may name, the default image first; the
+  // family of one is the name before ':'.
+  repeated string offered_images = 2;
 }
 
 message WatchBoxesRequest {}

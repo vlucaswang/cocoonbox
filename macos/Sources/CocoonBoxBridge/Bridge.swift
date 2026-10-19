@@ -13,8 +13,7 @@ import Foundation
 public actor Bridge {
     static let defaulted: Set<String> = ["box_status", "box_ensure", "box_hibernate", "box_save", "box_upgrade"]
     static let connectWait = Duration.seconds(3)
-    public static let instructions = "These tools run on the user's cocoonbox cloud desktops, not on this Mac. box_* tools manage the boxes; the box tools act on one box, the one their box argument names, else the default box of this session. Tools named <connector>_<tool> act on the user's connected accounts, such as GitHub, through CocoonBox Connect, not on a box."
-    public static let codexInstructions = "These tools run on the user's cocoonbox cloud desktop (Ubuntu 24.04, XFCE, 1280x800), not on this Mac. GUI work in a desktop app goes to gui_plan; commands go to shell."
+    public static let instructions = "These tools run on the user's cocoonbox boxes, not on this Mac. box_* tools manage the boxes; the box tools act on one box, the one their box argument names, else the default box of this session. Tools named <connector>_<tool> act on the user's connected accounts, such as GitHub, through CocoonBox Connect, not on a box."
     static let codexClient = "codex-mcp-client"
     // maxInstructions is Claude Code's cap on a server's instructions and on a tool's description.
     public static let maxInstructions = 2048
@@ -104,7 +103,7 @@ public actor Bridge {
             reply(id, [
                 "protocolVersion": params["protocolVersion"] as? String ?? "2025-06-18",
                 "capabilities": ["tools": ["listChanged": true], "resources": [:] as [String: Any]],
-                "serverInfo": ["name": "cocoonbox", "version": "0.1.0"],
+                "serverInfo": ["name": "cocoonbox", "version": "0.16.0"],
                 "instructions": await instructionsText(),
             ])
         case "ping":
@@ -509,8 +508,14 @@ public actor Bridge {
         }
         let own = boxInstructions[box] ?? (try? String(contentsOf: cacheFile(box, "instructions.txt"), encoding: .utf8)) ?? ""
         guard plans(toolsOf(box)), !own.isEmpty else { return Self.instructions }
-        if (client["clientInfo"] as? [String: Any])?["name"] as? String == Self.codexClient { return Self.codexInstructions }
+        if (client["clientInfo"] as? [String: Any])?["name"] as? String == Self.codexClient { return Self.codexInstructions(own) }
         return "\(Self.instructions) The default box's own instructions follow. \(own)"
+    }
+
+    // codexInstructions is one line, since Codex copies a server's instructions into every tool's description.
+    public static func codexInstructions(_ own: String) -> String {
+        let machine = own.prefix { $0 != "\n" }.components(separatedBy: ". ").first ?? ""
+        return "\(machine.hasSuffix(".") ? String(machine.dropLast()) : machine). It is the user's cocoonbox, not this Mac: GUI work in an app goes to gui_plan; commands go to shell."
     }
 
     // cacheFile keeps one box's tools and instructions apart from every other box's, since image families serve different ones.

@@ -1,5 +1,5 @@
 [Unit]
-Description=Warn when /, /srv/cb or a /srv/cb project quota is 80% full
+Description=Alert when /, /srv/cb or a /srv/cb project quota crosses 70% or 85%
 
 [Service]
 Type=oneshot

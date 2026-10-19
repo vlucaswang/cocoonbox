@@ -825,8 +825,11 @@ func (*ListBoxesRequest) Descriptor() ([]byte, []int) {
 }
 
 type ListBoxesResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Boxes         []*Box                 `protobuf:"bytes,1,rep,name=boxes,proto3" json:"boxes,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Boxes []*Box                 `protobuf:"bytes,1,rep,name=boxes,proto3" json:"boxes,omitempty"`
+	// Images CreateBoxRequest.image may name, the default image first; the
+	// family of one is the name before ':'.
+	OfferedImages []string `protobuf:"bytes,2,rep,name=offered_images,json=offeredImages,proto3" json:"offered_images,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -864,6 +867,13 @@ func (*ListBoxesResponse) Descriptor() ([]byte, []int) {
 func (x *ListBoxesResponse) GetBoxes() []*Box {
 	if x != nil {
 		return x.Boxes
+	}
+	return nil
+}
+
+func (x *ListBoxesResponse) GetOfferedImages() []string {
+	if x != nil {
+		return x.OfferedImages
 	}
 	return nil
 }
@@ -2045,9 +2055,10 @@ const file_cocoonbox_control_v1_boxes_proto_rawDesc = "" +
 	"\x05image\x18\x02 \x01(\tR\x05image\"&\n" +
 	"\rGetBoxRequest\x12\x15\n" +
 	"\x06box_id\x18\x01 \x01(\tR\x05boxId\"\x12\n" +
-	"\x10ListBoxesRequest\"D\n" +
+	"\x10ListBoxesRequest\"k\n" +
 	"\x11ListBoxesResponse\x12/\n" +
-	"\x05boxes\x18\x01 \x03(\v2\x19.cocoonbox.control.v1.BoxR\x05boxes\"\x13\n" +
+	"\x05boxes\x18\x01 \x03(\v2\x19.cocoonbox.control.v1.BoxR\x05boxes\x12%\n" +
+	"\x0eoffered_images\x18\x02 \x03(\tR\rofferedImages\"\x13\n" +
 	"\x11WatchBoxesRequest\"b\n" +
 	"\x15WatchOperationRequest\x12!\n" +
 	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12&\n" +

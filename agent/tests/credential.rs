@@ -1,5 +1,7 @@
 #![cfg(test)]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -16,7 +18,6 @@ use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
 use tonic::{Code, Request};
 
-const TOKEN: &str = "edge-token-for-credential";
 const LOGIN_PAGE: &str = r#"<!doctype html><title>login</title>
 <form action="/login" method="post">
 <input name="user" autocomplete="username" placeholder="Username">
@@ -66,8 +67,10 @@ impl Drop for ChromeGuard {
 
 fn authed<T>(msg: T) -> Request<T> {
     let mut req = Request::new(msg);
-    req.metadata_mut()
-        .insert("x-cocoonbox-edge-token", MetadataValue::from_static(TOKEN));
+    req.metadata_mut().insert(
+        "x-cocoonbox-credential",
+        MetadataValue::from_static(common::owner()),
+    );
     req
 }
 
@@ -261,16 +264,21 @@ async fn fill_credential_signs_in_only_on_the_matching_origin_and_logs_no_value(
         .unwrap();
     let toolhost_log = capture(&mut toolhost);
     let port = free_port().await;
+    let identity = dir.path().join("identity").join("identity");
+    common::provision(&identity);
     let mut serve = Command::new(env!("CARGO_BIN_EXE_cocoonbox-agent"))
         .arg("serve")
         .env("GW_BASE_URL", "http://127.0.0.1:9/v1")
         .env("GW_API_KEY", "k")
         .env("MODEL_MAIN", "deepseek/deepseek-v4.1-flash")
         .env("MODEL_COMPUTER", "anthropic/claude-sonnet-5")
-        .env("EDGE_TOKEN", TOKEN)
         .env("AGENT_LISTEN", format!("127.0.0.1:{port}"))
         .env("CB_STATE_DIR", &state)
-        .env("CB_IDENTITY_PATH", dir.path().join("no-identity"))
+        .env("CB_IDENTITY_PATH", &identity)
+        .env(
+            "CB_IDENTITY_OWNER",
+            std::os::unix::fs::MetadataExt::uid(&dir.path().metadata().unwrap()).to_string(),
+        )
         .env("TOOLHOST_SOCKET", &socket)
         .stderr(Stdio::piped())
         .kill_on_drop(true)

@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -183,10 +182,8 @@ func TestShareSecretIsNoGRPCToken(t *testing.T) {
 
 func TestScreenFiltersBothDirections(t *testing.T) {
 	stream, want := serverStream()
-	box := &scriptedScreen{stream: stream, got: make(chan []byte, 64)}
-	agentSrv := grpc.NewServer()
-	agentv1.RegisterSessionServer(agentSrv, box)
-	resolver := &fakeResolver{addr: serve(t, agentSrv)}
+	box := serveScriptedScreen(t, stream)
+	resolver := &fakeResolver{screen: box.addr}
 	proxy := NewProxy(resolver, fakeCreds{}, dialer.NewPool())
 	t.Cleanup(proxy.pool.Close)
 	cut := make(chan struct{})
@@ -258,44 +255,57 @@ func TestScreenFiltersBothDirections(t *testing.T) {
 	}
 }
 
-// scriptedScreen plays stream as the box's RFB server, 7 bytes a frame, sending the security part only once the
+// scriptedScreen plays stream as the box's RFB server, 7 bytes a write, sending the security part only once the
 // viewer's version has arrived, and reports every byte the bridge forwards.
 type scriptedScreen struct {
-	agentv1.UnimplementedSessionServer
-	stream []byte
-	got    chan []byte
+	addr string
+	got  chan []byte
 }
 
-func (s *scriptedScreen) Screen(stream grpc.BidiStreamingServer[agentv1.ScreenClientFrame, agentv1.ScreenServerFrame]) error {
-	send := func(b []byte) error {
-		for len(b) > 0 {
-			n := min(7, len(b))
-			if err := stream.Send(&agentv1.ScreenServerFrame{Data: b[:n]}); err != nil {
-				return err
-			}
-			b = b[n:]
-		}
-		return nil
+func serveScriptedScreen(t *testing.T, stream []byte) *scriptedScreen {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
 	}
-	if err := send(s.stream[:12]); err != nil {
-		return err
-	}
-	rest := s.stream[12:]
-	for {
-		in, err := stream.Recv()
+	t.Cleanup(func() { _ = lis.Close() })
+	s := &scriptedScreen{addr: lis.Addr().String(), got: make(chan []byte, 64)}
+	go func() {
+		conn, err := lis.Accept()
 		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		send := func(b []byte) error {
+			for len(b) > 0 {
+				n := min(7, len(b))
+				if _, err := conn.Write(b[:n]); err != nil {
+					return err
+				}
+				b = b[n:]
+			}
 			return nil
 		}
-		if data := in.GetData(); len(data) > 0 {
-			s.got <- data
+		if send(stream[:12]) != nil {
+			return
+		}
+		rest := stream[12:]
+		buf := make([]byte, 256)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			s.got <- bytes.Clone(buf[:n])
 			if rest != nil {
-				if err := send(rest); err != nil {
-					return err
+				if send(rest) != nil {
+					return
 				}
 				rest = nil
 			}
 		}
-	}
+	}()
+	return s
 }
 
 // fakeShares serves shares by the sha256 of their secret; a zero ExpiresAt means an hour from now.

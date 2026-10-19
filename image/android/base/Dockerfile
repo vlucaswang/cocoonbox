@@ -16,7 +16,7 @@ COPY android/rootfs /tmp/cb-image/android/rootfs
 COPY android/ashmem /tmp/cb-image/android/ashmem
 COPY --from=ui /cb-ui.jar /tmp/cb-image/android/ui/cb-ui.jar
 COPY android/base/verify.sh /tmp/cb-image/android/base/verify.sh
-COPY desk/rootfs/opt/desk/lib /tmp/cb-image/desk/rootfs/opt/desk/lib
+COPY desk/shuttle.sh /tmp/cb-image/desk/shuttle.sh
 COPY desk/rootfs/usr/local/bin/desk /tmp/cb-image/desk/rootfs/usr/local/bin/desk
 RUN bash /tmp/cb-image/android/provision.sh && \
     bash /tmp/cb-image/android/base/verify.sh && \

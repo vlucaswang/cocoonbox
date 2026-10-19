@@ -33,7 +33,7 @@ public enum LocalAgentKind: String, CaseIterable, Codable, Identifiable, Sendabl
     public static let tokenVariable = "COCOONBOX_TOKEN"
     public static let socketVariable = "COCOONBOX_APP_SOCKET"
     public static let agentVariable = "COCOONBOX_AGENT"
-    public static let instructions = "Your computer is the user's cocoonbox cloud desktop; use the cocoonbox MCP tools (shell, files, browser_*, computer_*) for all work on it; local files are not the target."
+    public static let instructions = "Your computer is the user's cocoonbox, a cloud desktop or Android phone; use the cocoonbox MCP tools (shell, files, computer_*, and browser_* where the box has them) for all work on it; local files are not the target."
 
     public var id: String { rawValue }
 

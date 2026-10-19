@@ -50,14 +50,23 @@ struct BoxesService: Cocoonbox_Control_V1_Boxes.SimpleServiceProtocol {
 
     func list(request: Cocoonbox_Control_V1_ListBoxesRequest, context: ServerContext) async throws -> Cocoonbox_Control_V1_ListBoxesResponse {
         let boxes = await world.boxes
-        return .with { $0.boxes = boxes }
+        return .with {
+            $0.boxes = boxes
+            $0.offeredImages = MockWorld.offeredImages
+        }
     }
 
     func watch(request: Cocoonbox_Control_V1_WatchBoxesRequest, response: RPCWriter<Cocoonbox_Control_V1_ListBoxesResponse>, context: ServerContext) async throws {
         let (boxes, changes) = await world.watchBoxes()
-        try await response.write(.with { $0.boxes = boxes })
+        try await response.write(.with {
+            $0.boxes = boxes
+            $0.offeredImages = MockWorld.offeredImages
+        })
         for await boxes in changes {
-            try await response.write(.with { $0.boxes = boxes })
+            try await response.write(.with {
+                $0.boxes = boxes
+                $0.offeredImages = MockWorld.offeredImages
+            })
         }
     }
 

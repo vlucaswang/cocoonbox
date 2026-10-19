@@ -7,9 +7,10 @@ mod browser;
 mod cua;
 pub mod desk;
 mod exec;
-mod files;
+pub(crate) mod files;
 pub(crate) mod flows;
 mod ground;
+mod model;
 pub mod rpc;
 mod scope;
 mod script;
@@ -40,8 +41,9 @@ use android::Android;
 use browser::Browser;
 use cua::Cua;
 use desk::Desk;
-use rpc::{Call, Output};
-use script::Scripts;
+use model::Models;
+use rpc::{Call, Client, Output};
+use script::{Scripts, ShuttleScreen};
 use shell::Shell;
 
 const SOCKET_MODE: u32 = 0o660;
@@ -60,6 +62,7 @@ struct Host {
     /// The screen tools of an Android box, in place of cua-driver.
     android: Option<Android>,
     desk: Desk,
+    models: Models,
     scripts: Scripts,
     /// The program of each plugin script tool, on a box that runs GUI plans.
     plugins: HashMap<String, PathBuf>,
@@ -70,11 +73,14 @@ struct Host {
     /// The saved flows of a box that runs GUI plans, which a read-only share does not read.
     hidden: Option<PathBuf>,
     flow_writes: watch::Sender<u64>,
+    /// shuttle's daemon, which answers the desk verbs, model calls and runs of a box that runs it.
+    shuttle: Option<Client>,
 }
 
 impl Host {
     /// Creates a host from its configuration.
     fn new(cfg: &ToolhostConfig) -> Self {
+        let shuttle = cfg.shuttle_socket.clone().map(Client::new);
         Self {
             workspace: cfg.workspace.clone(),
             scratch: PathBuf::from(SCRATCH_DIR),
@@ -88,8 +94,14 @@ impl Host {
             cua: Cua::new(cfg.cua_socket.clone(), cfg.automation.plans()),
             android: (cfg.automation == Automation::Android)
                 .then(|| Android::new(cfg.adb_bin.clone())),
-            desk: Desk::default(),
-            scripts: Scripts::new(cfg.script_bin.clone(), PathBuf::from(SCRIPT_DIR)),
+            desk: Desk::new(shuttle.clone()),
+            models: Models::new(cfg.gw_base_url.as_deref()),
+            scripts: Scripts::new(
+                cfg.script_bin.clone(),
+                PathBuf::from(SCRIPT_DIR),
+                cfg.socket.clone(),
+                shuttle.clone(),
+            ),
             plugins: cfg
                 .plugins
                 .iter()
@@ -99,8 +111,9 @@ impl Host {
             session_save: cfg.session_save.clone(),
             home: cfg.home.clone(),
             plans: cfg.automation.plans(),
-            hidden: cfg.automation.plans().then(|| flows::dir(&cfg.workspace)),
+            hidden: cfg.automation.scripts().then(|| flows::dir(&cfg.workspace)),
             flow_writes: watch::channel(0).0,
+            shuttle,
         }
     }
 
@@ -109,6 +122,13 @@ impl Host {
         let call = match self.android_call(call).await {
             Ok(result) => {
                 let out = result.unwrap_or_else(Output::error);
+                timing::note("error", out.is_error);
+                return out;
+            }
+            Err(call) => call,
+        };
+        let call = match self.relay(call).await {
+            Ok(out) => {
                 timing::note("error", out.is_error);
                 return out;
             }
@@ -176,6 +196,7 @@ impl Host {
             "computer_act" => self.cua.act(&self.browser, &call.agent_id, call.args).await,
             "computer_end" => self.cua.end(call.args).await.map(Output::text),
             t if t.starts_with("desk_") => self.desk.run(&self.cua, t, call.args).await,
+            t if t.starts_with("model_") => self.models.run(t, call.args).await.map(Output::text),
             "script_run" => {
                 self.scripts
                     .run(&self.cua, &self.workspace, call.args)
@@ -214,7 +235,7 @@ impl Host {
             other => match self.plugins.get(other) {
                 Some(bin) => {
                     self.scripts
-                        .run_with(bin, &self.cua, &self.workspace, call.args)
+                        .run_with(other, bin, &self.cua, &self.workspace, call.args)
                         .await
                 }
                 None => Err(format!("unknown tool {other}")),
@@ -225,11 +246,24 @@ impl Host {
         out
     }
 
-    /// Runs the screen, desk and script tools of an Android box; every other call comes back.
-    async fn android_call(&self, call: Call) -> Result<Result<Output, String>, Call> {
+    /// Runs the screen, desk and script tools of an Android box; on a box that runs shuttle, every call but a run comes back, its screen tools under shuttle's names.
+    async fn android_call(&self, mut call: Call) -> Result<Result<Output, String>, Call> {
         let Some(android) = &self.android else {
             return Err(call);
         };
+        if let Some(shuttle) = &self.shuttle {
+            let screen = ShuttleScreen(shuttle);
+            return Ok(match call.tool.as_str() {
+                "script_run" => self.scripts.run(&screen, &self.workspace, call.args).await,
+                "gui_plan" => self.scripts.plan(&screen, &self.workspace, call.args).await,
+                _ => {
+                    if let Some(tool) = shuttle_tool(&call.tool) {
+                        call.tool = tool;
+                    }
+                    return Err(call);
+                }
+            });
+        }
         Ok(match call.tool.as_str() {
             "screenshot" => android.look().await,
             "computer_state" => android.state(call.args).await,
@@ -240,6 +274,23 @@ impl Host {
             "gui_plan" => self.scripts.plan(android, &self.workspace, call.args).await,
             _ => return Err(call),
         })
+    }
+
+    /// Sends a desk verb or model call as it came to shuttle, on a box that runs it; every other call comes back.
+    async fn relay(&self, mut call: Call) -> Result<Output, Call> {
+        let Some(shuttle) = &self.shuttle else {
+            return Err(call);
+        };
+        if call.tool == "desk" {
+            call.tool = format!("desk_{}", call.args["op"].as_str().unwrap_or_default());
+        }
+        if !(call.tool.starts_with("desk_") || call.tool.starts_with("model_")) {
+            return Err(call);
+        }
+        Ok(shuttle
+            .desk(&call, rpc::DESK_DEADLINE)
+            .await
+            .unwrap_or_else(Output::error))
     }
 
     async fn shell(&self, agent_id: &str, args: Value) -> Result<String, String> {
@@ -486,6 +537,15 @@ fn safe_name(s: &str) -> String {
         .collect()
 }
 
+/// shuttle's name for an Android screen tool: `screenshot` is `desk_look`, `computer_X` is `desk_computer_X`.
+fn shuttle_tool(tool: &str) -> Option<String> {
+    match tool {
+        "screenshot" => Some("desk_look".to_owned()),
+        "computer_state" | "computer_act" | "computer_end" => Some(format!("desk_{tool}")),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,5 +563,145 @@ mod tests {
         assert_eq!(desktop_name("ubuntu:GNOME"), Some("GNOME"));
         assert_eq!(desktop_name("XFCE"), Some("XFCE"));
         assert_eq!(desktop_name(""), None);
+    }
+
+    const SHUTTLE_ANDROID: [&str; 19] = [
+        "desk_windows",
+        "desk_wait",
+        "desk_snapshot",
+        "desk_find",
+        "desk_read",
+        "desk_press",
+        "desk_act",
+        "desk_at",
+        "desk_key",
+        "desk_type",
+        "desk_click",
+        "desk_focus",
+        "desk_close",
+        "desk_launch",
+        "desk_screen",
+        "desk_shot",
+        "desk_computer_state",
+        "desk_computer_act",
+        "desk_computer_end",
+    ];
+
+    #[tokio::test]
+    async fn an_android_box_with_shuttle_sends_its_screen_desk_and_run_calls_there_and_runs_no_adb()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let ran = dir.path().join("adb-ran");
+        let adb = dir.path().join("adb");
+        std::fs::write(
+            &adb,
+            format!("#!/bin/sh\necho \"$@\" >> {}\n", ran.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let desk = dir.path().join("desk.sock");
+        let (seen, mut tools) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let listener = UnixListener::bind(&desk).unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut conn, _) = listener.accept().await.unwrap();
+                let call: Call = rpc::read_frame(&mut conn).await.unwrap();
+                let out = match call.tool.as_str() {
+                    "desk_look" => Output {
+                        image_b64: Some("aW1n".into()),
+                        ..Output::text("720x1280 screen")
+                    },
+                    "gui_plan" => Output::text(r#"{"ok":true}"#),
+                    "script_run" => Output::text(r#"{"result":null,"logs":"","duration_ms":1}"#),
+                    tool if SHUTTLE_ANDROID.contains(&tool) => Output::text("{}"),
+                    tool => Output::error(format!("unknown desk tool {tool}")),
+                };
+                seen.send(call.tool).unwrap();
+                rpc::write_frame(&mut conn, &out).await.unwrap();
+            }
+        });
+        let socket = dir.path().join("toolhost.sock");
+        let cfg = ToolhostConfig {
+            socket: socket.clone(),
+            socket_group: "no-such-group".into(),
+            workspace: dir.path().into(),
+            chrome_bin: "false".into(),
+            chrome_profile: dir.path().join("chrome"),
+            cdp_port: 1,
+            cua_socket: dir.path().join("cua.sock"),
+            script_bin: "false".into(),
+            session_save: dir.path().join("session-save"),
+            home: dir.path().into(),
+            automation: Automation::Android,
+            plugins: Vec::new(),
+            adb_bin: adb,
+            gw_base_url: None,
+            shuttle_socket: Some(desk),
+        };
+        tokio::spawn(run(cfg));
+        while !socket.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let toolhost = Client::new(socket);
+        let calls = [
+            ("screenshot", json!({})),
+            ("computer_state", json!({"session": "cu"})),
+            (
+                "computer_act",
+                json!({"session": "cu", "action": "tap", "x": 1, "y": 2}),
+            ),
+            ("computer_end", json!({"session": "cu"})),
+            ("desk_type", json!({"text": "你好"})),
+            ("desk", json!({"op": "windows"})),
+            (
+                "gui_plan",
+                json!({"steps": [{"app": "x"}], "screenshot": false}),
+            ),
+            ("script_run", json!({"code": "export function main() {}"})),
+            (
+                "gui_plan",
+                json!({"steps": [{"app": "x"}], "screenshot": true}),
+            ),
+        ];
+        for (tool, args) in calls {
+            let shot = args["screenshot"] != false && matches!(tool, "script_run" | "gui_plan");
+            let out = toolhost
+                .call(&Call {
+                    agent_id: "ag".into(),
+                    tool: tool.into(),
+                    args,
+                })
+                .await
+                .unwrap();
+            assert!(!out.is_error, "{tool}: {}", out.text);
+            if shot {
+                assert_eq!(out.image_b64.as_deref(), Some("aW1n"), "{tool}");
+            }
+        }
+        let mut got = Vec::new();
+        while let Ok(tool) = tools.try_recv() {
+            got.push(tool);
+        }
+        assert_eq!(
+            got,
+            [
+                "desk_look",
+                "desk_computer_state",
+                "desk_computer_act",
+                "desk_computer_end",
+                "desk_type",
+                "desk_windows",
+                "gui_plan",
+                "script_run",
+                "desk_look",
+                "gui_plan",
+                "desk_look"
+            ]
+        );
+        assert!(
+            !ran.exists(),
+            "the toolhost ran adb: {:?}",
+            std::fs::read_to_string(&ran)
+        );
     }
 }
