@@ -17,6 +17,8 @@ grep -qx 'Environment=TOOLHOST_SOCKET=/run/cocoonbox/toolhost.sock' /etc/systemd
 grep -qx 'Environment=SHUTTLE_SOCKET=/run/cocoonbox/desk.sock' /etc/systemd/system/cocoonbox-toolhost.service
 shuttle=$(dirname "$(readlink -f /usr/local/bin/cocoon-shuttle)")
 test -x "$shuttle/node" && test -s "$shuttle/runtime/gui_plan.mts"
+case $(dpkg --print-architecture) in arm64) machine=00b7 ;; *) machine=003e ;; esac
+[ "$(od -An -tx2 -j18 -N2 "$shuttle/cocoon-shuttle" | tr -d ' ')" = "$machine" ]
 grep -Fqx "ui_jar = \"$shuttle/android/cb-ui.jar\"" /etc/cocoonbox/shuttle.toml
 test -s "$shuttle/android/cb-ui.jar"
 test -f /opt/android/AGENTS.md
