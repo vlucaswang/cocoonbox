@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use base64::Engine;
@@ -15,8 +15,10 @@ use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
+use super::act::{card_field, is_chrome};
 use super::browser::Browser;
 use super::desk::key_names;
+use super::ground::{libreoffice, png_rgb};
 use super::rpc::{self, Output};
 use super::scope;
 use super::timing;
@@ -70,7 +72,6 @@ const SKIPPED: &str = "had no keycode";
 const RUN_CHARS: usize = 8;
 const WM_WAIT: Duration = Duration::from_secs(10);
 const WM_POLL: Duration = Duration::from_millis(100);
-const CARD_FILE_MAX: u64 = 64 * 1024;
 const NO_TEXT_TARGET: &str =
     "no application window is on the screen to type into; open or focus one first";
 const RETRIED: [&str; 4] = [
@@ -2042,12 +2043,6 @@ fn label_key(label: &str) -> String {
         .to_owned()
 }
 
-/// Whether `pid` runs LibreOffice, whose toolbar extents can sit a menu bar's height above the drawn controls.
-pub(super) fn libreoffice(pid: i64) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/comm"))
-        .is_ok_and(|c| c.trim_end() == "soffice.bin")
-}
-
 /// Whether process `pid` has GTK loaded.
 fn gtk(pid: i64) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/maps")).is_ok_and(|maps| {
@@ -2379,17 +2374,6 @@ fn encode(width: u32, height: u32, rgb: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Whether every [`COLOR_STRIDE`]th pixel shows more than [`PHOTO_COLORS`] distinct colours.
-pub(super) fn png_rgb(width: u32, height: u32, rgb: &[u8]) -> Result<Vec<u8>, String> {
-    let mut out = Vec::new();
-    let mut enc = png::Encoder::new(&mut out, width, height);
-    enc.set_color(png::ColorType::Rgb);
-    enc.set_depth(png::BitDepth::Eight);
-    enc.write_header()
-        .and_then(|mut w| w.write_image_data(rgb))
-        .map_err(|e| format!("encode PNG: {e}"))?;
-    Ok(out)
-}
-
 fn photo(rgb: &[u8]) -> bool {
     let mut seen = HashSet::new();
     rgb.as_chunks::<3>()
@@ -2417,93 +2401,16 @@ fn differs(a: &[u8], b: &[u8]) -> bool {
             .any(|(x, y)| x.abs_diff(*y) > STILL_TOLERANCE)
 }
 
-/// Reads `field` of the card in a link-cli `--output-file` JSON file under /tmp or $HOME; no error carries a value.
-async fn card_field(path: &str, field: &str) -> Result<String, String> {
-    let real = tokio::fs::canonicalize(path)
-        .await
-        .map_err(|e| format!("{path}: {e}"))?;
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let allowed = real.starts_with("/tmp") || home.is_some_and(|h| real.starts_with(h));
-    if !Path::new(path).is_absolute() || !allowed {
-        return Err(format!("{path}: give an absolute path under /tmp or $HOME"));
-    }
-    let size = tokio::fs::metadata(&real)
-        .await
-        .map_err(|e| format!("{path}: {e}"))?
-        .len();
-    if size > CARD_FILE_MAX {
-        return Err(format!("{path}: larger than {CARD_FILE_MAX} bytes"));
-    }
-    let raw = tokio::fs::read(&real)
-        .await
-        .map_err(|e| format!("{path}: {e}"))?;
-    let doc: Value = serde_json::from_slice(&raw)
-        .map_err(|_| format!("{path}: not a link-cli card file (no JSON)"))?;
-    let card = &doc["card"];
-    let text = |v: &Value| match v {
-        Value::String(s) => Some(s.clone()),
-        Value::Number(n) => Some(n.to_string()),
-        _ => None,
-    };
-    let month = || text(&card["exp_month"]).and_then(|m| m.parse::<u32>().ok());
-    let value = match field {
-        "exp_month" => month().map(|m| format!("{m:02}")),
-        "exp" => month()
-            .zip(text(&card["exp_year"]).and_then(|y| y.parse::<u32>().ok()))
-            .map(|(m, y)| format!("{m:02}/{:02}", y % 100)),
-        _ => text(field.split('.').fold(card, |v, k| &v[k])),
-    };
-    value
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| format!("{path}: the card has no {field}"))
-}
-
-/// Whether `launch_app` names Chrome or Chromium by command, display name or desktop file id.
-fn is_chrome(app: &str) -> bool {
-    let app = app.to_lowercase();
-    app.contains("chrome") || app.contains("chromium")
-}
-
 fn required<'a>(v: &'a Option<String>, name: &str) -> Result<&'a str, String> {
     v.as_deref().ok_or_else(|| format!("missing {name}"))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::super::browser::tests::{slow_chrome, web_chrome};
     use super::*;
-
-    #[test]
-    fn png_rgb_round_trips_through_decode_png() {
-        let rgb = [1, 2, 3, 4, 5, 6];
-        let (info, data) = decode_png(&png_rgb(2, 1, &rgb).unwrap()).unwrap();
-        assert_eq!(
-            (info.width, info.height, info.color_type),
-            (2, 1, png::ColorType::Rgb)
-        );
-        assert_eq!(&data[..6], &rgb);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn only_a_soffice_bin_process_counts_as_libreoffice() {
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("soffice.bin");
-        std::fs::copy("/bin/sleep", &bin).unwrap();
-        let mut office = std::process::Command::new(&bin).arg("30").spawn().unwrap();
-        let pid = office.id().into();
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while !libreoffice(pid) && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(
-            libreoffice(pid),
-            "the soffice.bin copy never showed in /proc/{pid}/comm"
-        );
-        assert!(!libreoffice(std::process::id().into()));
-        office.kill().unwrap();
-        office.wait().unwrap();
-    }
 
     #[tokio::test]
     async fn a_request_waits_for_a_driver_that_is_restarting() {
@@ -2677,44 +2584,6 @@ mod tests {
         let card = json!({"spend_request_id": "lsrq_1", "card": {"number": PAN, "cvc": "321", "exp_month": 3, "exp_year": 2029, "brand": "visa", "billing_address": {"postal_code": "94107"}}});
         std::fs::write(&path, card.to_string()).unwrap();
         path.display().to_string()
-    }
-
-    #[tokio::test]
-    async fn card_field_reads_a_link_cli_card_file_under_tmp_only() {
-        let dir = tempfile::tempdir_in("/tmp").unwrap();
-        let path = card_file(dir.path());
-        for (field, want) in [
-            ("number", PAN),
-            ("cvc", "321"),
-            ("exp_month", "03"),
-            ("exp_year", "2029"),
-            ("exp", "03/29"),
-            ("billing_address.postal_code", "94107"),
-        ] {
-            assert_eq!(card_field(&path, field).await.unwrap(), want, "{field}");
-        }
-        let missing = card_field(&path, "billing_address.line1")
-            .await
-            .unwrap_err();
-        assert!(
-            missing.contains("no billing_address.line1") && !missing.contains(PAN),
-            "{missing}"
-        );
-        let big = dir.path().join("big.json");
-        std::fs::write(&big, vec![b' '; 64 * 1024 + 1]).unwrap();
-        assert!(
-            card_field(big.to_str().unwrap(), "number")
-                .await
-                .unwrap_err()
-                .contains("larger than")
-        );
-        assert!(
-            card_field("/etc/passwd", "number")
-                .await
-                .unwrap_err()
-                .contains("under /tmp or $HOME")
-        );
-        assert!(card_field("../../etc/passwd", "number").await.is_err());
     }
 
     /// A driver on `socket` that logs every call in `calls`, lists one Chrome window and types the first `typed` texts.

@@ -209,6 +209,7 @@ async fn a_failed_run_shuttle_answers_as_an_error_keeps_its_report_and_shape() {
                     call.tool.as_str(),
                     call.args["code"].as_str().or(call.args["case"].as_str()),
                 ) {
+                    ("desk_look", _) => Output::error("no screen"),
                     (_, Some("fail")) => Output::error(failed),
                     (_, Some("busy")) => {
                         Output::error("desk busy: another run or action is still going")

@@ -20,8 +20,9 @@ use desk_core::text::{MAX_FOUND, NAME_CHARS, Named, cli_args, matches, ms, quote
 use desk_core::window::{self, TITLE_TIERS, Window, app_window, title_matches};
 
 use super::atspi::{Atspi, Extras, FOCUSED, Frame, Node, Obj, SHOWING, key_combos};
-use super::cua::{Cua, libreoffice};
+use super::cua::Cua;
 use super::files;
+use super::ground::libreoffice;
 use super::rpc::{Call, Client, Output};
 
 const FRAME_ROLES: [u32; 5] = [2, 16, 19, 23, WINDOW_ROLE];

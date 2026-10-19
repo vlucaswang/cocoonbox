@@ -5,17 +5,20 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::process::Command;
 
-use super::cua::{self, Cua, libreoffice};
+use super::act;
 use super::desk::Desk;
-use super::rpc::{self, Output};
+use super::rpc::{self, Call, Client, DESK_DEADLINE, Output};
 use super::script::Scripts;
 use super::timing;
 
 const OCR_SCALE: usize = 2;
+const SETTLE: Duration = Duration::from_millis(600);
 const OCR_TIMEOUT: Duration = Duration::from_secs(10);
 const TESSERACT: &str = "tesseract";
 const CROP: [f64; 2] = [320.0, 200.0];
@@ -78,13 +81,14 @@ struct Word {
 /// Runs `computer_act` with `target`: `locate` only finds it, `click` also presses it; returns the
 /// tier that found it, the point in the caller's screenshot pixels and a crop around it.
 pub async fn act(
-    cua: &Cua,
+    shuttle: &Client,
+    owner: &str,
     desk: &Desk,
     scripts: &Scripts,
     workspace: &Path,
     args: Value,
 ) -> Result<Output, String> {
-    let k = cua.screenshot_scale(&args);
+    let k = act::scale(shuttle, owner, &args["session"]).await?;
     let a: TargetArgs = rpc::parse(args)?;
     let press = match a.action.as_str() {
         "click" => true,
@@ -123,7 +127,7 @@ pub async fn act(
         if found["served"].is_array() {
             out["served"] = found["served"].take();
         }
-        return Ok(finish(cua, &mut out, rect));
+        return Ok(finish(shuttle, owner, &mut out, rect).await);
     }
     let mut out = match place.err().filter(|_| found["found"] == true) {
         Some(why) => json!({"a11y": {"element": element, "no_point": why, "ms": a11y_ms}}),
@@ -137,21 +141,21 @@ pub async fn act(
         None => texts_from(&a.target.description),
     };
     if texts.is_empty() {
-        return not_found(cua, out, a.max_edge, start).await;
+        return not_found(shuttle, owner, out, a.max_edge, start).await;
     }
     let t0 = Instant::now();
-    let words = match ocr(cua).await {
+    let words = match ocr(shuttle, owner).await {
         Ok(words) => words,
         Err(e) => {
             out["ocr"] = json!({"error": e, "ms": t0.elapsed().as_millis()});
-            return not_found(cua, out, a.max_edge, start).await;
+            return not_found(shuttle, owner, out, a.max_edge, start).await;
         }
     };
     timing::mark("ocr");
     let titles = if names_titles(&a.target.description) {
         Vec::new()
     } else {
-        titled(cua, desk, &words, &texts).await
+        titled(shuttle, owner, desk, &words, &texts).await
     };
     timing::mark("titles");
     let (text, hits) = first_read(&words, &texts, |r| !titles.contains(r))
@@ -164,17 +168,22 @@ pub async fn act(
         out["ocr"]["titles"] = titles.len().into();
     }
     let [rect] = hits.as_slice() else {
-        return not_found(cua, out, a.max_edge, start).await;
+        return not_found(shuttle, owner, out, a.max_edge, start).await;
     };
     let (cx, cy) = (rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0);
     if let Some(why) = label_of_field(desk, &a.target.description, text, cx, cy).await {
         out["ocr"]["refused"] = why.into();
-        return not_found(cua, out, a.max_edge, start).await;
+        return not_found(shuttle, owner, out, a.max_edge, start).await;
     }
     if press {
-        cua.desk_input("click", json!({"x": cx.round(), "y": cy.round()}))
-            .await?;
-        cua.settled().await;
+        ask(
+            shuttle,
+            owner,
+            "desk_click",
+            json!({"x": cx.round(), "y": cy.round()}),
+        )
+        .await?;
+        tokio::time::sleep(SETTLE).await;
     }
     out = json!({
         "tier": "ocr",
@@ -187,7 +196,25 @@ pub async fn act(
         "a11y": out["a11y"],
         "ms": start.elapsed().as_millis(),
     });
-    Ok(finish(cua, &mut out, Some(*rect)))
+    Ok(finish(shuttle, owner, &mut out, Some(*rect)).await)
+}
+
+/// Whether `pid` runs LibreOffice, whose toolbar extents can sit a menu bar's height above the drawn controls.
+pub(super) fn libreoffice(pid: i64) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/comm"))
+        .is_ok_and(|c| c.trim_end() == "soffice.bin")
+}
+
+/// RGB rows of `width` x `height` as a PNG.
+pub(super) fn png_rgb(width: u32, height: u32, rgb: &[u8]) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    let mut enc = png::Encoder::new(&mut out, width, height);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()
+        .and_then(|mut w| w.write_image_data(rgb))
+        .map_err(|e| format!("encode PNG: {e}"))?;
+    Ok(out)
 }
 
 /// The box to point at for the found element, else why none: hidden, unbounded, or a LibreOffice control without a `shift`.
@@ -207,11 +234,18 @@ fn placed(found: &Value, office: impl Fn(i64) -> bool) -> Result<[f64; 4], &'sta
 }
 
 /// The result line and a full-resolution crop of [`CROP`] around `rect`, else no image.
-fn finish(cua: &Cua, out: &mut Value, rect: Option<[f64; 4]>) -> Output {
-    let image_b64 = rect.and_then(|[x, y, w, h]| {
-        let (cx, cy) = (x + w / 2.0, y + h / 2.0);
-        cua.crop([cx - CROP[0] / 2.0, cy - CROP[1] / 2.0, CROP[0], CROP[1]])
-    });
+async fn finish(shuttle: &Client, owner: &str, out: &mut Value, rect: Option<[f64; 4]>) -> Output {
+    let image_b64 = match rect {
+        Some([x, y, w, h]) => {
+            let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+            let region = json!({"x": cx - CROP[0] / 2.0, "y": cy - CROP[1] / 2.0, "w": CROP[0], "h": CROP[1]});
+            ask(shuttle, owner, "desk_look", json!({"region": region}))
+                .await
+                .ok()
+                .and_then(|o| o.image_b64)
+        }
+        None => None,
+    };
     if let Some(b64) = &image_b64 {
         out["crop"] = json!({"w": CROP[0], "h": CROP[1], "bytes": b64.len() / 4 * 3});
     }
@@ -225,7 +259,8 @@ fn finish(cua: &Cua, out: &mut Value, rect: Option<[f64; 4]>) -> Output {
 
 /// No tier found the target: the reasons, and the whole screen so the caller grounds it.
 async fn not_found(
-    cua: &Cua,
+    shuttle: &Client,
+    owner: &str,
     mut out: Value,
     max_edge: Option<u32>,
     start: Instant,
@@ -237,17 +272,23 @@ async fn not_found(
             "{out}\nnot found by its accessibility name or a unique match of its text; give x,y from the screenshot"
         ),
         is_error: true,
-        image_b64: cua.screenshot_once(max_edge).await?,
+        image_b64: ask(shuttle, owner, "desk_look", json!({"max_edge": max_edge}))
+            .await?
+            .image_b64,
         ..Output::default()
     })
 }
 
 /// The screen's words by tesseract on a copy scaled up [`OCR_SCALE`] times, boxes in screen pixels.
-async fn ocr(cua: &Cua) -> Result<Vec<Word>, String> {
-    let (w, h, rgb) = cua.screen_rgb().ok_or("no screen capture over MIT-SHM")?;
+async fn ocr(shuttle: &Client, owner: &str) -> Result<Vec<Word>, String> {
+    let shot = ask(shuttle, owner, "desk_shot", json!({})).await?;
+    let png = B64
+        .decode(shot.image_b64.ok_or("the screen shot has no image")?)
+        .map_err(|e| format!("decode the screen shot: {e}"))?;
+    let (w, h, rgb) = rgb_of(&png)?;
     let (sw, sh, big) = upscale(w as usize, h as usize, &rgb, OCR_SCALE);
     let path = std::env::temp_dir().join(format!("{}.png", crate::new_id("cb-ocr")));
-    let png = cua::png_rgb(sw, sh, &big)?;
+    let png = png_rgb(sw, sh, &big)?;
     tokio::fs::write(&path, png)
         .await
         .map_err(|e| format!("write {}: {e}", path.display()))?;
@@ -372,11 +413,22 @@ fn first_read<'a>(
 
 /// The matches of `texts` that show a window title, not content: in a desktop panel, a title bar, or a
 /// tab such as a browser's.
-async fn titled(cua: &Cua, desk: &Desk, words: &[Word], texts: &[String]) -> Vec<[f64; 4]> {
+async fn titled(
+    shuttle: &Client,
+    owner: &str,
+    desk: &Desk,
+    words: &[Word],
+    texts: &[String],
+) -> Vec<[f64; 4]> {
     let mut out = Vec::new();
     for rect in texts.iter().flat_map(|t| matches(words, t)) {
         let (cx, cy) = (rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0);
-        if cua.title_at(cx, cy)
+        let title = ask(shuttle, owner, "desk_title_at", json!({"x": cx, "y": cy}))
+            .await
+            .ok()
+            .and_then(|o| serde_json::from_str::<Value>(&o.text).ok())
+            .is_some_and(|t| t["title"] == true);
+        if title
             || desk
                 .at_point(cx.round() as i32, cy.round() as i32)
                 .await
@@ -479,6 +531,47 @@ async fn label_of_field(
             found["name"].as_str().unwrap_or_default()
         )
     })
+}
+
+/// Shuttle's answer to desk call `tool` with `args` as agent `owner`; an error answer is an error.
+async fn ask(shuttle: &Client, owner: &str, tool: &str, args: Value) -> Result<Output, String> {
+    let call = Call {
+        agent_id: owner.to_owned(),
+        tool: tool.to_owned(),
+        args,
+    };
+    let out = shuttle.desk(&call, DESK_DEADLINE).await?;
+    if out.is_error {
+        return Err(out.text);
+    }
+    Ok(out)
+}
+
+/// The size and RGB rows of PNG `png`.
+fn rgb_of(png: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
+    let mut dec = png::Decoder::new(std::io::Cursor::new(png));
+    dec.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = dec
+        .read_info()
+        .map_err(|e| format!("decode the screen shot: {e}"))?;
+    let mut buf = vec![
+        0;
+        reader
+            .output_buffer_size()
+            .ok_or("the screen shot is too large")?
+    ];
+    let info = reader
+        .next_frame(&mut buf)
+        .map_err(|e| format!("decode the screen shot: {e}"))?;
+    let channels = info.color_type.samples();
+    let rgb = buf[..info.buffer_size()]
+        .chunks_exact(channels)
+        .flat_map(|px| match channels {
+            1 | 2 => [px[0]; 3],
+            _ => [px[0], px[1], px[2]],
+        })
+        .collect();
+    Ok((info.width, info.height, rgb))
 }
 
 fn rect_of(v: &Value) -> Option<[f64; 4]> {
@@ -716,5 +809,35 @@ mod tests {
         let (w, h, big) = upscale(4, 3, &rgb, 2);
         assert_eq!((w, h), (8, 6));
         assert!(big.iter().all(|v| *v == 10));
+    }
+
+    #[test]
+    fn png_rgb_round_trips_through_rgb_of() {
+        let rgb = [1, 2, 3, 4, 5, 6];
+        assert_eq!(
+            rgb_of(&png_rgb(2, 1, &rgb).unwrap()).unwrap(),
+            (2, 1, rgb.to_vec())
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn only_a_soffice_bin_process_counts_as_libreoffice() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("soffice.bin");
+        std::fs::copy("/bin/sleep", &bin).unwrap();
+        let mut office = std::process::Command::new(&bin).arg("30").spawn().unwrap();
+        let pid = office.id().into();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !libreoffice(pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            libreoffice(pid),
+            "the soffice.bin copy never showed in /proc/{pid}/comm"
+        );
+        assert!(!libreoffice(std::process::id().into()));
+        office.kill().unwrap();
+        office.wait().unwrap();
     }
 }

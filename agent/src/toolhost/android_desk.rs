@@ -15,8 +15,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::android::{Android, SCREEN};
-use super::cua::png_rgb;
 use super::desk::wait_for;
+use super::ground::png_rgb;
 use super::rpc::Output;
 
 const APPLICATION: i64 = 1;

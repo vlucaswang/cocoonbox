@@ -384,11 +384,11 @@ impl Screen for Android {
 pub struct ShuttleScreen<'a>(pub &'a Client);
 
 impl Screen for ShuttleScreen<'_> {
-    async fn screenshot_once(&self, _max_edge: Option<u32>) -> Result<Option<String>, String> {
+    async fn screenshot_once(&self, max_edge: Option<u32>) -> Result<Option<String>, String> {
         let call = Call {
             agent_id: "toolhost".to_owned(),
             tool: "desk_look".to_owned(),
-            args: json!({}),
+            args: json!({"max_edge": max_edge}),
         };
         let out = self.0.desk(&call, rpc::DESK_DEADLINE).await?;
         if out.is_error {
