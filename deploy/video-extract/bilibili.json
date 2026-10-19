@@ -1,13 +1,13 @@
 {
   "name": "bilibili_run",
-  "description": "Extract a Bilibili video's text into a timestamped document on Cocoonbox, using CPU tools with no LLM/API charges. Call with code: \"\", screenshot: false, params: {bilibili_link: \"https://www.bilibili.com/video/BV…/\"}. This starts a background job and returns job_id. Then call code: \"\", screenshot: false, params: {action: \"status\", job_id: \"…\"}; when completed call params: {action: \"document\", job_id: \"…\"} to receive the document text and saved Markdown/HTML paths. Poll at sensible intervals; a full video can take many minutes. If next_offset is non-null, retrieve the next document chunk using offset: next_offset; never present a truncated chunk as the full document. mode: auto (default, accessible captions then OCR), ocr (visible text), captions (caption track only). OCR options: region full (default) or subtitles (bottom 38%); interval_seconds 2 (default), 1, 3, 5, or 10. OCR is sampled and may contain errors; it is not audio transcription. Handles one video part at a time, up to four hours and 2 GiB. Existing jobs are reused; retry: true restarts a failed job. Report failed status and error faithfully. No arbitrary code is executed by this tool. The source's license is not established by this tool.",
+  "description": "Extract a Bilibili video's text into a timestamped document on Cocoonbox, using captions or remote PaddleOCR-VL-1.6-GGUF image recognition. Sampled JPEG frames go to the configured OCR server; there is no CPU fallback. Call with code: \"\", screenshot: false, params: {bilibili_link: \"https://www.bilibili.com/video/BV…/\"}. This starts a background job and returns job_id. Then call code: \"\", screenshot: false, params: {action: \"status\", job_id: \"…\"}; when completed call params: {action: \"document\", job_id: \"…\"} to receive the document text and saved Markdown/HTML paths. Poll at sensible intervals; a full video can take many minutes. If next_offset is non-null, retrieve the next document chunk using offset: next_offset; never present a truncated chunk as the full document. mode: auto (default, accessible captions then OCR), ocr (visible text), captions (caption track only). OCR options: region full (default) or subtitles (bottom 38%); interval_seconds 2 (default), 1, 3, 5, or 10. OCR is sampled and may contain errors; it is not audio transcription. Handles one video part at a time, up to four hours and 2 GiB. Existing jobs are reused; retry: true restarts a failed job. Report failed status and error faithfully. No arbitrary code is executed by this tool. The source's license is not established by this tool.",
   "bin": "/home/user/.local/share/cocoonbox/video-extract/extract.py",
   "resources": [
     {
       "uri": "cocoonbox://video-extract/GUIDE.md",
       "path": "/home/user/.local/share/cocoonbox/video-extract/GUIDE.md",
       "mime": "text/markdown",
-      "description": "Bilibili extraction: start a CPU caption/OCR job, check progress, and retrieve the resulting document"
+      "description": "Bilibili extraction: start a caption or remote OCR job, check progress, and retrieve the resulting document"
     }
   ]
 }

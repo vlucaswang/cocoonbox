@@ -1,9 +1,9 @@
 # Bilibili text extraction
 
-An optional Cocoonbox script-tool plugin. `bilibili_run` starts a CPU extraction
+An optional Cocoonbox script-tool plugin. `bilibili_run` starts a caption or remote OCR extraction
 job, reports progress, and returns a timestamped Markdown document. HTML and plain
 text copies are saved alongside it. The existing agent's script-plugin interface
-handles MCP discovery and execution; no proxy or model service is added.
+handles MCP discovery and execution. OCR uses an existing OpenAI-compatible image service.
 
 ## Install
 
@@ -14,6 +14,10 @@ sudo bash install.sh
 sudo systemctl restart cocoonbox-agent cocoonbox-toolhost
 ```
 
+For an upgrade with the same tool path, restart only `cocoonbox-agent` to refresh
+the descriptor. Preserve active workers and avoid restarting their toolhost until
+they finish. First installations need both services restarted.
+
 Restarting these services interrupts their active tool calls. Do the restart from
 a guest terminal or schedule it separately after the installing MCP call returns.
 For a scheduled restart, `systemd-run --on-active=3s --timer-property=AccuracySec=1s`
@@ -21,12 +25,11 @@ can launch `/bin/systemctl restart cocoonbox-agent cocoonbox-toolhost`.
 
 The installer adds a descriptor under `/etc/cocoonbox/tools.d/`, a short routing
 paragraph under `/etc/cocoonbox/routing.d/`, and files in
-`/home/user/.local/share/cocoonbox/video-extract/`. FFmpeg and Chinese/English
-Tesseract packages are installed if absent. A user-owned virtual environment holds
-RapidOCR ONNX Runtime 1.4.4 for scene text detection and Chinese/English recognition;
-Tesseract is the fallback when running without that environment. yt-dlp's official release zip is
-downloaded over HTTPS and checked against the release's SHA-256 manifest.
-Its version is printed by the installer. Nothing configures a paid API.
+`/home/user/.local/share/cocoonbox/video-extract/`. It installs Python 3 and FFmpeg
+if absent. yt-dlp's official release zip is downloaded over HTTPS and checked
+against the release's SHA-256 manifest. Its version is printed by the installer.
+The installer no longer installs CPU OCR packages or uses an old OCR virtual
+environment. Existing packages and virtual environments remain on disk.
 
 The agent must support script plugins and the guest must have the desk runtime.
 Refresh the ChatGPT connection's tools after installation; a new conversation may
@@ -55,6 +58,32 @@ sudo python3 box-rpc.py list
 sudo python3 box-rpc.py bilibili_run /path/to/arguments.json
 ```
 
+## Configure remote OCR
+
+OCR sends sampled JPEG frames to `http://192.168.10.109:12340/v1/chat/completions`
+using model `PaddleOCR-VL-1.6-GGUF`. The server must support image input through
+OpenAI-compatible chat completions. A models listing or text-only completion does
+not prove image support. Server image support and model setup belong to the operator.
+There is no CPU OCR fallback.
+
+Set `CB_OCR_BASE_URL` and `CB_OCR_MODEL` in the extractor's calling service environment
+to override these defaults. The base URL includes `/v1` and excludes credentials,
+queries, and fragments. The extractor uses standard proxy environment variables.
+The sandbox needs both an exact host/port egress rule and an internal-address
+allowance. The generator permits only `192.168.10.109:12340` for this service in
+desktop pools. An alternate endpoint needs its own exact policy allowance.
+
+Each new `ocr` or `auto` job saves its endpoint, model, and protocol version before
+starting its worker. Workers use that snapshot even if the environment changes.
+These settings separate cached jobs. Caption-only cache identity is unchanged,
+and existing documents remain readable by their original job IDs. A legacy job
+that needs OCR fails explicitly if it lacks the remote settings.
+
+Requests run one at a time with a 120-second timeout, no automatic retry, and a
+2048-token output budget. Connection, HTTP, malformed response, refusal, and output
+truncation errors fail the job without creating a completed document. Empty text
+is a valid blank frame. A video with no recognized text still fails without a document.
+
 ## Lifecycle and limits
 
 - `action: discover` detects all P parts of a BV and returns their ordered URLs.
@@ -68,7 +97,7 @@ sudo python3 box-rpc.py bilibili_run /path/to/arguments.json
 - `auto` uses accessible captions when available, then OCR. `ocr` always extracts
   sampled visible text. `captions` fails if no caption track is accessible. No
   speech recognition is included.
-- Defaults: whole image, one frame every two seconds, two OCR workers, one job at
+- Defaults: whole image, one frame every two seconds, one remote OCR request at a time, one job at
   a time, up to four hours per part, 2 GiB media, 30-minute download deadline.
 - OCR retains timestamps and merges consecutive near-duplicates. It is approximate
   and can miss text between samples. The printable document states this limitation.
@@ -97,9 +126,11 @@ python3 -m unittest discover -s deploy/video-extract -p 'test_*.py' -v
 bash -n deploy/video-extract/install.sh
 ```
 
-Exercise the installed MCP tool through start → status → document. For a real OCR
-check without depending on Bilibili, generate a short FFmpeg video with known text
-in the guest, call `ocr()` on it, and verify that text appears in the segments.
+Exercise the installed MCP tool through start, status, and document. For an image
+inference check without Bilibili, run `python3 smoke_ocr.py` from this directory in
+the installed guest. It generates an FFmpeg fixture, sends its frames through the
+configured remote endpoint, and checks recognition, timestamp merging, and documents.
+It exits with an error if the server rejects images or returns unusable output.
 
 On this deployment's host, validate a completed real job and export the exact
 documents through authenticated MCP:

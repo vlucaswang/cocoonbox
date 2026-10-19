@@ -60,10 +60,11 @@ connect = {"host": GATEWAY, "ports": [CONNECT_PORT], "secret": "CB_CONNECT_KEY"}
 apt = {"host": GATEWAY, "ports": [APT_PORT]}
 inject = {"host": "*", "intercept": "inject", "ports": WEB_PORTS}
 public = {"host": "*", "ports": [SSH_PORT, *WEB_PORTS]}
-egress = {"allow": [gw, apt, public]}
-inject_egress = {"allow": [gw, apt, inject, public]}
+ocr = {"host": "192.168.10.109", "ports": [12340]}
+egress = {"allow": [gw, apt, ocr, public]}
+inject_egress = {"allow": [gw, apt, inject, ocr, public]}
 # the door key rule precedes the inject rule, since a plain request takes the first rule that matches
-connect_egress = {"allow": [gw, connect, apt, inject, public]}
+connect_egress = {"allow": [gw, connect, apt, inject, ocr, public]}
 # Android's push channel (FCM) holds a connection on 5228-5230
 android_egress = {"allow": [gw, connect, apt, inject, {"host": "*", "ports": [SSH_PORT, *WEB_PORTS, *FCM_PORTS]}]}
 # the tenant class narrows nothing; the pool rules hold the ports
@@ -96,7 +97,7 @@ conf = {
     "refill_concurrency": 1,
     "audit_log": True,
     # sandboxd blocks the node's own addresses; a box still reaches the console this host serves
-    "egress_internal_allow": [f"{GATEWAY}/32:{GW_PORT},{CONNECT_PORT},{APT_PORT},{STATE_PORT}",
+    "egress_internal_allow": ["192.168.10.109/32:12340", f"{GATEWAY}/32:{GW_PORT},{CONNECT_PORT},{APT_PORT},{STATE_PORT}",
                               *(f"{a}/{a.max_prefixlen}:{','.join(map(str, WEB_PORTS))}" for a in public_addrs())],
     "egress_conn_rate": CONN_RATE,
     "disk_reserve": {"free": DISK_RESERVE},

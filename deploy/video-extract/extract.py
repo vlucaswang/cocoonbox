@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""CPU-only Bilibili captions/OCR. JSON jobs and Markdown documents, no LLM calls."""
-import concurrent.futures
+import base64
 import difflib
 import fcntl
 import hashlib
 import html
-import importlib.util
+import http.client
 import json
 import math
 import os
@@ -14,15 +13,20 @@ import re
 import subprocess
 import sys
 import tempfile
-import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 
 ROOT = Path(os.environ.get('CB_VIDEO_ROOT', '/workspace/video-extractions'))
 HERE = Path(__file__).resolve().parent
 MAX_DURATION = 4 * 3600
 MAX_DOWNLOAD = 2 * 1024**3
-OCR_LOCAL = threading.local()
+DEFAULT_OCR_BASE_URL = 'http://192.168.10.109:12340/v1'
+DEFAULT_OCR_MODEL = 'PaddleOCR-VL-1.6-GGUF'
+OCR_PROTOCOL_VERSION = 1
+OCR_TIMEOUT = 120
+OCR_RESPONSE_LIMIT = 2 * 1024 * 1024
 OCR_UI_LABELS = frozenset(('1x', '回顾', '隐藏', '自动中', '自动'))
 OCR_FILTER_VERSION = 1
 
@@ -235,29 +239,90 @@ def merge_segments(segments, start, end, text):
     segments.append({'start': start, 'end': end, 'text': text})
 
 
-def recognize(frame):
-    if importlib.util.find_spec('rapidocr_onnxruntime'):
-        from rapidocr_onnxruntime import RapidOCR
-        if not hasattr(OCR_LOCAL, 'engine'):
-            OCR_LOCAL.engine = RapidOCR(intra_op_num_threads=1, inter_op_num_threads=1,
-                                       text_score=0.75)
-        rows, _ = OCR_LOCAL.engine(str(frame))
-        return '\n'.join(row[1] for row in rows or [] if row[2] >= 0.75)
-    env = dict(os.environ, OMP_THREAD_LIMIT='1')
-    result = subprocess.run(['tesseract', str(frame), 'stdout', '-l', 'chi_sim+eng', '--psm', '6'],
-                            capture_output=True, text=True, timeout=30, env=env)
-    if result.returncode:
-        raise RuntimeError('Tesseract failed: ' + result.stderr[-500:])
-    return result.stdout
+def ocr_settings():
+    base_url = os.environ.get('CB_OCR_BASE_URL', DEFAULT_OCR_BASE_URL).strip().rstrip('/')
+    model = os.environ.get('CB_OCR_MODEL', DEFAULT_OCR_MODEL).strip()
+    url = urllib.parse.urlsplit(base_url)
+    if (url.scheme not in ('http', 'https') or not url.hostname or url.username is not None
+            or url.password is not None or url.query or url.fragment
+            or any(char.isspace() for char in base_url)):
+        raise ValueError('CB_OCR_BASE_URL must be an HTTP(S) base URL without credentials, query, or fragment')
+    try:
+        url.port
+    except ValueError as error:
+        raise ValueError('CB_OCR_BASE_URL has an invalid port') from error
+    if not model:
+        raise ValueError('CB_OCR_MODEL must not be empty')
+    return {'base_url': base_url, 'model': model, 'protocol_version': OCR_PROTOCOL_VERSION}
 
 
-def ocr(video, folder, duration, interval, region):
+def ocr_error_detail(text):
+    return re.sub(r'data:image/[^\s"\\]+', '[image omitted]', text)[:500]
+
+
+def recognize(frame, settings):
+    endpoint = settings['base_url'] + '/chat/completions'
+    model = settings['model']
+    context = f'Remote OCR at {endpoint} using model {model}'
+    image = base64.b64encode(frame.read_bytes()).decode('ascii')
+    payload = {'model': model, 'temperature': 0, 'stream': False, 'max_tokens': 2048,
+               'messages': [{'role': 'user', 'content': [
+                   {'type': 'text', 'text': 'OCR: Transcribe all visible text in this image exactly. '
+                    'Preserve the original language and line breaks. Return only the recognized text, '
+                    'without explanations or Markdown fences. Return an empty string if there is no text.'},
+                   {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + image}}]}]}
+    request = urllib.request.Request(endpoint, data=json.dumps(payload).encode('utf-8'),
+                                     headers={'Content-Type': 'application/json'}, method='POST')
+    try:
+        with urllib.request.urlopen(request, timeout=OCR_TIMEOUT) as response:
+            raw = response.read(OCR_RESPONSE_LIMIT + 1)
+    except urllib.error.HTTPError as error:
+        with error:
+            try:
+                detail = ocr_error_detail(error.read(4096).decode('utf-8', errors='replace'))
+            except (OSError, http.client.HTTPException):
+                detail = 'Could not read the server error body'
+        raise RuntimeError(f'{context} failed with HTTP {error.code}: {detail}. '
+                           'Check the server supports image input and the configured model.') from error
+    except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
+        raise RuntimeError(f'{context} could not complete the request: {error}. '
+                           'Check the server, proxy, and exact host/port egress policy.') from error
+    if len(raw) > OCR_RESPONSE_LIMIT:
+        raise RuntimeError(f'{context} returned a response larger than {OCR_RESPONSE_LIMIT} bytes')
+    try:
+        result = json.loads(raw)
+    except (ValueError, UnicodeError) as error:
+        raise RuntimeError(f'{context} returned invalid JSON') from error
+    if not isinstance(result, dict):
+        raise RuntimeError(f'{context} returned an invalid response object')
+    if result.get('error'):
+        detail = ocr_error_detail(json.dumps(result['error'], ensure_ascii=False))
+        raise RuntimeError(f'{context} returned an API error: {detail}. Check the server image support and model.')
+    choices = result.get('choices')
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise RuntimeError(f'{context} returned invalid or missing choices')
+    choice = choices[0]
+    message = choice.get('message')
+    if not isinstance(message, dict):
+        raise RuntimeError(f'{context} returned an invalid or missing message')
+    if message.get('refusal') or choice.get('finish_reason') == 'content_filter':
+        raise RuntimeError(f'{context} refused image recognition. Check the server and model.')
+    if choice.get('finish_reason') == 'length':
+        raise RuntimeError(f'{context} truncated the recognized text at its token limit. '
+                           'Check the server token limit before retrying.')
+    if choice.get('finish_reason') != 'stop':
+        raise RuntimeError(f'{context} returned an incomplete or unsupported finish_reason')
+    text = message.get('content')
+    if not isinstance(text, str):
+        raise RuntimeError(f'{context} returned missing or non-string message content')
+    return text
+
+
+def ocr(video, folder, duration, interval, region, settings):
     segments = []
     processed = 0
     total = math.ceil(duration / interval)
-    # Small chunks bound temporary storage; two single-thread OCR workers leave the desktop usable.
-    with tempfile.TemporaryDirectory(prefix='frames-', dir=folder) as scratch, \
-            concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+    with tempfile.TemporaryDirectory(prefix='frames-', dir=folder) as scratch:
         frames = Path(scratch)
         for chunk_start in range(0, math.ceil(duration), 60):
             chunk_length = min(60, duration - chunk_start)
@@ -270,7 +335,8 @@ def ocr(video, folder, duration, interval, region):
             if result.returncode:
                 raise RuntimeError('FFmpeg frame extraction failed: ' + result.stderr.decode(errors='replace')[-500:])
             images = sorted(frames.glob('*.jpg'))
-            for index, text in enumerate(pool.map(recognize, images)):
+            for index, frame in enumerate(images):
+                text = recognize(frame, settings)
                 start = chunk_start + index * interval
                 merge_segments(segments, start, min(start + interval, duration), text)
                 processed += 1
@@ -334,12 +400,16 @@ def worker(folder):
         if not segments:
             if state['mode'] == 'captions':
                 raise RuntimeError('No accessible caption track. Use mode="ocr" for visible text.')
+            settings = state.get('ocr_settings')
+            if (not isinstance(settings, dict)
+                    or not settings.get('base_url') or not settings.get('model')
+                    or settings.get('protocol_version') != OCR_PROTOCOL_VERSION):
+                raise RuntimeError('This job has no compatible remote OCR settings. Start a new job with the updated extractor.')
             update(folder, phase='download')
             video = download(state['bilibili_link'], folder)
             update(folder, phase='ocr', progress=0)
-            segments = ocr(video, folder, info['duration'], state['interval_seconds'], state['region'])
-            method = ('ocr (RapidOCR ONNX CPU, Chinese+English)' if importlib.util.find_spec('rapidocr_onnxruntime')
-                      else 'ocr (Tesseract chi_sim+eng)')
+            segments = ocr(video, folder, info['duration'], state['interval_seconds'], state['region'], settings)
+            method = 'ocr (remote ' + settings['model'] + ')'
         else:
             method = 'captions (' + language + ')'
         if not segments:
@@ -410,7 +480,10 @@ def main(params):
     if interval not in (1, 2, 3, 5, 10):
         raise ValueError('interval_seconds must be 1, 2, 3, 5, or 10')
     # Settings form the cache key; tracking links do not start duplicate jobs.
-    key = json.dumps([url, mode, region, interval])
+    settings = ocr_settings() if mode != 'captions' else None
+    identity = [url, mode, region, interval]
+    key = (json.dumps(identity + [settings], sort_keys=True, separators=(',', ':'))
+           if settings is not None else json.dumps(identity))
     job_id = hashlib.sha256(key.encode()).hexdigest()[:16]
     ROOT.mkdir(parents=True, exist_ok=True)
     with (ROOT / '.lock').open('w') as lock:
@@ -426,11 +499,11 @@ def main(params):
                 raise RuntimeError(f'An extraction is already running: {other["job_id"]}. Poll it before starting another.')
         folder.mkdir(exist_ok=True)
         state = {'job_id': job_id, 'status': 'queued', 'phase': 'starting', 'bilibili_link': url,
-                 'mode': mode, 'region': region, 'interval_seconds': interval, 'created_at': time.time()}
+                 'mode': mode, 'region': region, 'interval_seconds': interval, 'created_at': time.time(),
+                 'ocr_settings': settings}
         atomic_json(folder / 'status.json', state)
         with (folder / 'worker.log').open('a') as log:
-            python = HERE / 'venv/bin/python'
-            process = subprocess.Popen([str(python) if python.exists() else sys.executable,
+            process = subprocess.Popen([sys.executable,
                                         str(Path(__file__).resolve()), '--worker', str(folder)],
                                        stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
         # Do not race a worker update by rewriting its state after spawning it.

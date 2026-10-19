@@ -1,9 +1,13 @@
 # Extract Bilibili video text
 
-Use `bilibili_run` to hand off extraction to the box. This tool uses FFmpeg,
-RapidOCR (Chinese and English, on the CPU), and yt-dlp. Tesseract is a fallback
-when the optional Python environment is absent. It makes no paid API calls.
-It processes accessible videos; it does not establish a video's license.
+Use `bilibili_run` to hand off extraction to the box. It uses FFmpeg and yt-dlp,
+and sends sampled JPEG frames to a remote OCR image service. The default endpoint
+is `http://192.168.10.109:12340/v1`, with model `PaddleOCR-VL-1.6-GGUF`.
+Operators can override these with `CB_OCR_BASE_URL` and `CB_OCR_MODEL` in the
+calling service environment. Each job keeps its original settings. There is no CPU
+OCR fallback. Server failures, image incompatibility, refusal, and truncated output
+produce a failed job. Report the returned error faithfully. The operator owns image
+server setup. This tool processes accessible videos and does not establish their license.
 
 Start with:
 
@@ -48,7 +52,8 @@ when they want a published caption track. No audio recognition is included.
 Bullet comments are not caption tracks, although OCR of the full screen may
 recognize bullet comments embedded in the actual video.
 
-OCR defaults to one frame every two seconds, across the full image. It can miss
+OCR defaults to one frame every two seconds, across the full image.
+One request runs at a time, with a 120-second timeout for each frame. It can miss
 short-lived text. `interval_seconds: 1` samples more densely. `region: subtitles`
 crops the bottom 38%, which is faster for videos whose dialogue is in that area,
 but misses text elsewhere. OCR is approximate; do not call it a complete or
