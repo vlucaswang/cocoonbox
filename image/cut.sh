@@ -77,7 +77,10 @@ if [ "$DRY" = 1 ]; then
 	echo "boot $BASE as $VM"
 	[ "$PROVISION" = 0 ] || echo "provision"
 	for R in "${RUNTIMES[@]}"; do echo "runtime $R"; done
-	[ -z "$AGENT" ] || echo "agent $AGENT"
+	if [ -n "$AGENT" ]; then
+		echo "agent $AGENT"
+		for R in "${RUNTIMES[@]}"; do [ ! -f "$R/after-agent.sh" ] || echo "runtime $R after agent"; done
+	fi
 	[ "$FAMILY" != cbcore ] || echo "clean gate"
 	printf '%s\n' seal stop "export $TARBALL" "import $TEMPLATE"
 	exit 0
@@ -111,6 +114,14 @@ if [ -n "$AGENT" ]; then
 	step "agent $(sha256sum "$AGENT" | cut -c1-16)"
 	guest -i "$VM" -- sh -c 'cat > /tmp/cocoonbox-agent' < "$AGENT"
 	guest "$VM" -- sh -c 'install -m 0755 /tmp/cocoonbox-agent /usr/local/bin/cocoonbox-agent && rm /tmp/cocoonbox-agent && systemctl enable --now cocoonbox-toolhost cocoonbox-agent'
+	for R in "${RUNTIMES[@]}"; do
+		[ -f "$R/after-agent.sh" ] || continue
+		N=$(basename "$R")
+		step "runtime $N after agent"
+		tar -C "$(dirname "$R")" -cf - "$N" | guest -i "$VM" -- sh -c 'rm -rf /tmp/cb-image && mkdir -p /tmp/cb-image && tar -xf - -C /tmp/cb-image'
+		guest "$VM" -- bash "/tmp/cb-image/$N/after-agent.sh"
+		guest "$VM" -- rm -rf /tmp/cb-image
+	done
 fi
 
 if [ "$FAMILY" = cbcore ]; then

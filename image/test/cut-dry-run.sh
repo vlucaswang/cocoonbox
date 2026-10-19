@@ -6,8 +6,9 @@ export LC_ALL=C AUDIT=/dev/null
 IMAGE="$(cd "$(dirname "$0")/.." && pwd)"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-mkdir -p "$WORK/one" "$WORK/two" "$WORK/empty"
-touch "$WORK/one/provision.sh" "$WORK/two/provision.sh"
+mkdir -p "$WORK/one" "$WORK/two" "$WORK/empty" "$WORK/later"
+touch "$WORK/one/provision.sh" "$WORK/two/provision.sh" "$WORK/later/provision.sh" "$WORK/later/after-agent.sh"
+printf '#!/bin/sh\n' > "$WORK/agent" && chmod +x "$WORK/agent"
 WORK=$(cd "$WORK" && pwd -P)
 fails=0
 
@@ -46,6 +47,16 @@ seal
 stop
 export /srv/cb/sbx/build/cocoonbox-cbcore-v2.tar.gz
 import cbcore:v2" -f cbcore -r "$WORK/one" base:v1 v2
+
+expect "an agent step runs each runtime's after-agent step after it" "boot base:v1 as cbcut-fam-v2
+runtime $WORK/one
+runtime $WORK/later
+agent $WORK/agent
+runtime $WORK/later after agent
+seal
+stop
+export /srv/cb/sbx/build/cocoonbox-fam-v2.tar.gz
+import fam:v2" -f fam -a "$WORK/agent" -r "$WORK/one" -r "$WORK/later" base:v1 v2
 
 expect "cbdesk keeps its tarball name" "boot base:v1 as cbcut-v2
 seal

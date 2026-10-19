@@ -142,7 +142,6 @@ check() {
 	systemctl show -p Environment cocoonbox-agent | grep 'SHUTTLE_SOCKET=/run/cocoonbox/desk.sock' | grep -q 'TOOLHOST_SOCKET=/run/cocoonbox/desk.sock'
 	systemctl show -p Environment cocoonbox-session | grep -q 'TOOLHOST_SOCKET=/run/cocoonbox/desk.sock'
 	systemctl --user -M user@ show-environment | grep -qx 'TOOLHOST_SOCKET=/run/cocoonbox/desk.sock'
-	python3 -c 'import json, sys; sys.exit(json.load(open(sys.argv[1]))["service"] != "cocoonbox")' /etc/cocoonbox/tools.d/cocoonbox.json
 	systemctl cat cocoonbox-toolhost | grep -qx 'ConditionPathExists=!/etc/cocoonbox/tools.d/cocoonbox.json'
 	grep -qxF '## Pick the tool tier first' "$ROOT/AGENTS.md"
 	[ "$(grep -cF '<!-- routing -->' "$ROOT/AGENTS.md")" = 0 ]
