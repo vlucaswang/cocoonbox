@@ -18,7 +18,7 @@ mod timing;
 mod volatile;
 mod xshm;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -60,8 +60,8 @@ struct Host {
     android: Option<Android>,
     desk: Desk,
     scripts: Scripts,
-    /// The program of each plugin script tool, on a box that runs GUI plans.
-    plugins: HashMap<String, PathBuf>,
+    /// The plugin script tools, on a box that runs GUI plans.
+    plugins: HashSet<String>,
     session_save: PathBuf,
     home: PathBuf,
     /// A box that runs GUI plans.
@@ -91,17 +91,12 @@ impl Host {
             android: (cfg.automation == Automation::Android)
                 .then(|| Android::new(cfg.adb_bin.clone())),
             desk: Desk::new(shuttle.clone()),
-            scripts: Scripts::new(
-                cfg.script_bin.clone(),
-                PathBuf::from(SCRIPT_DIR),
-                cfg.socket.clone(),
-                shuttle.clone(),
-            ),
+            scripts: Scripts::new(PathBuf::from(SCRIPT_DIR), shuttle.clone()),
             plugins: cfg
                 .plugins
                 .iter()
                 .filter(|_| cfg.automation.plans())
-                .map(|p| (p.name.clone(), p.bin.clone()))
+                .map(|p| p.name.clone())
                 .collect(),
             session_save: cfg.session_save.clone(),
             home: cfg.home.clone(),
@@ -179,14 +174,7 @@ impl Host {
                 .map(Output::text),
             "computer_state" => self.cua.state(call.args).await,
             "computer_act" if call.args.get("target").is_some_and(|t| !t.is_null()) => {
-                ground::act(
-                    &self.cua,
-                    &self.desk,
-                    &self.scripts,
-                    &self.workspace,
-                    call.args,
-                )
-                .await
+                ground::act(&self.cua, &self.desk, &self.scripts, call.args).await
             }
             "computer_act" => self.cua.act(&self.browser, &call.agent_id, call.args).await,
             "computer_end" => self.cua.end(call.args).await.map(Output::text),
@@ -215,19 +203,17 @@ impl Host {
             "flows_mark" => flows::mark(&self.workspace, call.args)
                 .await
                 .map(Output::text),
-            "flows_index" => self.scripts.reindex(&self.workspace).await,
+            "flows_index" => self.scripts.reindex().await,
             "flows_wait" => flows::wait(&self.flow_writes, call.args)
                 .await
                 .map(Output::text),
             "screenshot" | "computer_screenshot" => self.cua.look(&call.args).await,
-            other => match self.plugins.get(other) {
-                Some(bin) => {
-                    self.scripts
-                        .run_with(other, bin, &self.cua, &self.workspace, call.args)
-                        .await
-                }
-                None => Err(format!("unknown tool {other}")),
-            },
+            other if self.plugins.contains(other) => {
+                self.scripts
+                    .run_with(other, &self.cua, &self.workspace, call.args)
+                    .await
+            }
+            other => Err(format!("unknown tool {other}")),
         };
         let out = result.unwrap_or_else(Output::error);
         timing::note("error", out.is_error);
@@ -585,7 +571,6 @@ mod tests {
             chrome_profile: dir.path().join("chrome"),
             cdp_port: 1,
             cua_socket: dir.path().join("cua.sock"),
-            script_bin: "false".into(),
             session_save: "false".into(),
             home: dir.path().into(),
             automation: Automation::Desk,
@@ -702,7 +687,6 @@ mod tests {
             chrome_profile: dir.path().join("chrome"),
             cdp_port: 1,
             cua_socket: dir.path().join("cua.sock"),
-            script_bin: "false".into(),
             session_save: dir.path().join("session-save"),
             home: dir.path().into(),
             automation: Automation::Android,

@@ -1,64 +1,34 @@
-//! The script tool: one stateless script run as `user` by Node; `gui_plan` runs the image's plan executor that way.
+//! Runs on shuttle as the toolhost takes them: `script_run`, plugin tools and `gui_plan`, with their screenshots
+//! from the toolhost's screen.
 
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{ExitStatus, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use serde_json::{Value, json};
-use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::process::Command;
 
 use super::android::Android;
 use super::cua::Cua;
 use super::files;
 use super::rpc::{self, Call, Client, Output};
-use super::shell::Capture;
-use super::timing;
 use crate::llm::image_mime;
-use crate::runs::{self, MAX_RESULT_BYTES, PlanArgs, RunArgs, Script, Shot, Shots, timeout_of};
-use crate::sys;
+use crate::runs::{self, PlanArgs, Shot, Shots, timeout_of};
 
-const TERM_GRACE: Duration = Duration::from_secs(2);
-const PIPE_GRACE: Duration = Duration::from_millis(500);
 const RELEASE_TIMEOUT: Duration = Duration::from_secs(10);
 const LOCATE_TIMEOUT: Duration = Duration::from_secs(20);
 const KEPT_SHOTS: usize = 20;
-const ERROR_LINES: usize = 12;
-const DESK_PLAN: &str = "/opt/desk/lib/gui_plan.mts";
-const GAMES_PATH: &str = ":/usr/local/games:/usr/games";
-const ENTRY: &str = r#"import { writeFileSync } from 'node:fs'
-import { pathToFileURL } from 'node:url'
-const env = process.env
-const mod = await import(pathToFileURL(env.CB_SCRIPT).href)
-if (typeof mod.main === 'function') {
-  const value = await mod.main(JSON.parse(env.CB_PARAMS))
-  writeFileSync(env.CB_RESULT, JSON.stringify(value ?? null) ?? 'null')
-}
-if (globalThis.$snapshot !== undefined) writeFileSync(env.CB_SNAPSHOT, String(globalThis.$snapshot))
-setTimeout(() => process.exit(), 500).unref()
-"#;
 
-/// Runs scripts with Node at `bin`, one scratch directory per run under `dir`, or on shuttle when set.
+/// Runs scripts and GUI plans on shuttle, when the box runs it, keeping their screenshots under `dir`.
 pub struct Scripts {
-    bin: PathBuf,
     dir: PathBuf,
-    socket: PathBuf,
     shuttle: Option<Client>,
 }
 
 impl Scripts {
-    /// Creates the runner of `bin` with its scratch root `dir`; scripts reach the toolhost at `socket`, and run on `shuttle` when set.
-    pub fn new(bin: PathBuf, dir: PathBuf, socket: PathBuf, shuttle: Option<Client>) -> Self {
-        Self {
-            bin,
-            dir,
-            socket,
-            shuttle,
-        }
+    /// Creates the runner whose runs go to `shuttle` and whose kept screenshots go under `dir`.
+    pub fn new(dir: PathBuf, shuttle: Option<Client>) -> Self {
+        Self { dir, shuttle }
     }
 
     /// Runs one script and reports it as JSON text, with a screenshot taken after the run unless turned off.
@@ -68,38 +38,18 @@ impl Scripts {
         workspace: &Path,
         args: Value,
     ) -> Result<Output, String> {
-        self.run_with("script_run", &self.bin, screen, workspace, args)
-            .await
+        self.run_with("script_run", screen, workspace, args).await
     }
 
-    /// Runs one script as [`Scripts::run`] does, with the program at `bin` in place of Node; shuttle runs it as tool `tool`.
+    /// Runs one script as [`Scripts::run`] does, as tool `tool`, such as a plugin tool.
     pub async fn run_with(
         &self,
         tool: &str,
-        bin: &Path,
         screen: &impl Screen,
         workspace: &Path,
         args: Value,
     ) -> Result<Output, String> {
-        let shots = self.kept(screen);
-        if let Some(shuttle) = &self.shuttle {
-            return runs::script(shuttle, &shots, workspace, tool, args).await;
-        }
-        let a: RunArgs = rpc::parse(args)?;
-        let script = Script::of(a.code, a.script, workspace)?;
-        let id = uuid::Uuid::new_v4().simple().to_string();
-        let params = Value::Object(a.params.unwrap_or_default()).to_string();
-        let report = self
-            .run_script(
-                bin,
-                script,
-                &params,
-                workspace,
-                timeout_of(a.timeout_s),
-                &id,
-            )
-            .await?;
-        runs::finish_run(report, a.screenshot, a.max_edge, &shots).await
+        runs::script(self.shuttle()?, &self.kept(screen), workspace, tool, args).await
     }
 
     /// Runs the plan executor and reports its result as compact JSON, with a screenshot only after an escalation or on request.
@@ -119,20 +69,15 @@ impl Scripts {
             }));
         }
         let report = self
-            .plan_report(Value::Object(a.params), workspace, timeout_of(a.timeout_s))
+            .plan_report(Value::Object(a.params), timeout_of(a.timeout_s))
             .await?;
         runs::finish_plan(report, a.screenshot, a.max_edge, &self.kept(screen)).await
     }
 
     /// The plan executor's resolve of `target` in the focused window, pressed by action when `press`; its result.
-    pub async fn locate(
-        &self,
-        workspace: &Path,
-        target: &str,
-        press: bool,
-    ) -> Result<Value, String> {
+    pub async fn locate(&self, target: &str, press: bool) -> Result<Value, String> {
         let params = json!({"locate": {"target": target, "press": press}});
-        let mut report = self.plan_report(params, workspace, LOCATE_TIMEOUT).await?;
+        let mut report = self.plan_report(params, LOCATE_TIMEOUT).await?;
         if let Some(error) = report.get("error") {
             return Err(format!("locate: {error}"));
         }
@@ -140,10 +85,10 @@ impl Scripts {
     }
 
     /// Rebuilds the flow index with the plan executor after the library sync changed flows.
-    pub async fn reindex(&self, workspace: &Path) -> Result<Output, String> {
+    pub async fn reindex(&self) -> Result<Output, String> {
         let _index = super::flows::INDEX_LOCK.lock().await;
         let report = self
-            .plan_report(json!({"reindex": true}), workspace, RELEASE_TIMEOUT)
+            .plan_report(json!({"reindex": true}), RELEASE_TIMEOUT)
             .await?;
         if let Some(error) = report.get("error") {
             return Err(format!("reindex flows: {error}"));
@@ -158,29 +103,6 @@ impl Scripts {
             .unwrap_or_default()
     }
 
-    /// The report of one run of the plan executor with `params`; on shuttle it holds the plan's result only.
-    async fn plan_report(
-        &self,
-        params: Value,
-        workspace: &Path,
-        timeout: Duration,
-    ) -> Result<Value, String> {
-        let Some(shuttle) = &self.shuttle else {
-            let id = uuid::Uuid::new_v4().simple().to_string();
-            return self
-                .run_script(
-                    &self.bin,
-                    Script::File(PathBuf::from(DESK_PLAN)),
-                    &params.to_string(),
-                    workspace,
-                    timeout,
-                    &id,
-                )
-                .await;
-        };
-        runs::plan_report(shuttle, params, timeout).await
-    }
-
     /// The screenshots of runs on `screen`, kept in the scripts' folder.
     pub fn kept<'a, S>(&'a self, screen: &'a S) -> Kept<'a, S> {
         Kept {
@@ -189,152 +111,15 @@ impl Scripts {
         }
     }
 
-    /// Runs one script in its own scratch directory.
-    async fn run_script(
-        &self,
-        bin: &Path,
-        script: Script,
-        params: &str,
-        workspace: &Path,
-        timeout: Duration,
-        id: &str,
-    ) -> Result<Value, String> {
-        let run_dir = self.dir.join(id);
-        tokio::fs::create_dir_all(&run_dir)
-            .await
-            .map_err(|e| format!("create {}: {e}", run_dir.display()))?;
-        let _ = tokio::fs::set_permissions(&self.dir, std::fs::Permissions::from_mode(0o700)).await;
-        let report = self
-            .execute(bin, script, params, workspace, &run_dir, timeout)
-            .await;
-        let _ = tokio::fs::remove_dir_all(&run_dir).await;
-        report
+    /// The report of one run of shuttle's plan executor with `params`: the plan's result only.
+    async fn plan_report(&self, params: Value, timeout: Duration) -> Result<Value, String> {
+        runs::plan_report(self.shuttle()?, params, timeout).await
     }
 
-    async fn execute(
-        &self,
-        bin: &Path,
-        script: Script,
-        params: &str,
-        workspace: &Path,
-        run_dir: &Path,
-        timeout: Duration,
-    ) -> Result<Value, String> {
-        let script = match script {
-            Script::Code(code) => {
-                let path = run_dir.join("script.mts");
-                files::write_bytes(&path, code.as_bytes()).await?;
-                path
-            }
-            Script::File(path) => {
-                if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
-                    return Err(format!("script {} does not exist", path.display()));
-                }
-                path
-            }
-        };
-        let entry = run_dir.join("entry.mjs");
-        files::write_bytes(&entry, ENTRY.as_bytes()).await?;
-        let (result_path, snapshot_path) =
-            (run_dir.join("result.json"), run_dir.join("snapshot.txt"));
-        let started = Instant::now();
-        timing::mark("prepare");
-        let path = std::env::var("PATH").unwrap_or_default() + GAMES_PATH;
-        let mut node = Command::new(bin);
-        node.arg(&entry)
-            .current_dir(workspace)
-            .env("PATH", path)
-            .env("CB_SCRIPT", &script)
-            .env("CB_PARAMS", params)
-            .env("CB_RESULT", &result_path)
-            .env("CB_SNAPSHOT", &snapshot_path)
-            .env("TOOLHOST_SOCKET", &self.socket)
-            .env("SHUTTLE_FLOWS", workspace.join("flows"))
-            .process_group(0)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        sys::unprotect(&mut node);
-        let mut child = node
-            .spawn()
-            .map_err(|e| format!("start {}: {e}", bin.display()))?;
-        timing::mark("spawn");
-        let mut guard = RunGuard {
-            pgid: child.id(),
-            armed: true,
-        };
-        let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
-            return Err("script pipes missing".to_owned());
-        };
-        let (mut logs, mut errs) = (Capture::default(), Capture::default());
-        let ran = tokio::time::timeout(timeout, async {
-            let drained = async {
-                tokio::join!(drain(stdout, &mut logs), drain(stderr, &mut errs));
-            };
-            tokio::pin!(drained);
-            let mut open = true;
-            let status = tokio::select! {
-                status = child.wait() => status,
-                () = &mut drained => {
-                    open = false;
-                    child.wait().await
-                }
-            };
-            if open
-                && tokio::time::timeout(PIPE_GRACE, &mut drained)
-                    .await
-                    .is_err()
-            {
-                guard.signal(libc::SIGKILL);
-                let _ = tokio::time::timeout(PIPE_GRACE, &mut drained).await;
-            }
-            status
+    fn shuttle(&self) -> Result<&Client, String> {
+        self.shuttle.as_ref().ok_or_else(|| {
+            "scripts and GUI plans run on shuttle, which this box does not run".to_owned()
         })
-        .await;
-        let status = match ran {
-            Ok(status) => Some(status.map_err(|e| format!("wait for the script: {e}"))?),
-            Err(_) => {
-                guard.signal(libc::SIGTERM);
-                if tokio::time::timeout(TERM_GRACE, child.wait())
-                    .await
-                    .is_err()
-                {
-                    guard.signal(libc::SIGKILL);
-                    let _ = child.wait().await;
-                }
-                None
-            }
-        };
-        guard.armed = false;
-        timing::mark("run");
-        let stderr = errs.render();
-        let mut report = json!({
-            "duration_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-            "exit_code": Value::Null,
-        });
-        report["result"] = match read_capped(&result_path).await {
-            None => Value::Null,
-            Some(raw) => serde_json::from_slice(&raw)
-                .unwrap_or_else(|_| String::from_utf8_lossy(&raw).into_owned().into()),
-        };
-        report["logs"] = logs.render().into();
-        match status {
-            None => {
-                report["error"] = json!({"kind": "timeout", "message": format!("the run passed {}s and was stopped", timeout.as_secs())});
-            }
-            Some(status) => {
-                report["exit_code"] = status.code().into();
-                if let Some(error) = failure(status, &stderr) {
-                    report["error"] = error;
-                }
-            }
-        }
-        report["stderr"] = stderr.into();
-        if let Some(snapshot) = read_capped(&snapshot_path).await {
-            report["snapshot"] = String::from_utf8_lossy(&snapshot).into_owned().into();
-        }
-        Ok(report)
     }
 
     async fn screenshot(
@@ -422,119 +207,6 @@ impl<S: Screen> Shots for Kept<'_, S> {
     }
 }
 
-/// Signals the run's process group on drop unless disarmed.
-struct RunGuard {
-    pgid: Option<u32>,
-    armed: bool,
-}
-
-impl RunGuard {
-    fn signal(&self, signal: i32) {
-        if let Some(pgid) = self.pgid {
-            signal_run(pgid, signal);
-        }
-    }
-}
-
-impl Drop for RunGuard {
-    fn drop(&mut self) {
-        if self.armed {
-            self.signal(libc::SIGKILL);
-        }
-    }
-}
-
-/// Signals the processes of group `pgid` but the apps the run started in app scopes of their own.
-fn signal_run(pgid: u32, signal: i32) {
-    let (Ok(own), Ok(entries)) = (
-        std::fs::read_to_string("/proc/self/cgroup"),
-        std::fs::read_dir("/proc"),
-    ) else {
-        let _ = sys::signal_group(pgid, signal);
-        return;
-    };
-    for pid in entries
-        .flatten()
-        .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
-    {
-        let in_group = std::fs::read_to_string(format!("/proc/{pid}/stat"))
-            .ok()
-            .and_then(|stat| process_group(&stat))
-            == Some(pgid);
-        if in_group
-            && !std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
-                .is_ok_and(|cgroup| launched(&own, &cgroup))
-        {
-            let _ = sys::signal_process(pid, signal);
-        }
-    }
-}
-
-/// The process group field of a `/proc/<pid>/stat` line, read after the parenthesized command name.
-fn process_group(stat: &str) -> Option<u32> {
-    stat.rsplit_once(')')?
-        .1
-        .split_whitespace()
-        .nth(2)?
-        .parse()
-        .ok()
-}
-
-/// Whether `cgroup` is an app scope other than `own`, the toolhost's cgroup that a run inherits.
-fn launched(own: &str, cgroup: &str) -> bool {
-    cgroup != own
-        && cgroup
-            .lines()
-            .any(|l| l.contains("/app.slice/") && l.trim_end().ends_with(".scope"))
-}
-
-async fn drain(mut r: impl AsyncRead + Unpin, capture: &mut Capture) {
-    let mut chunk = vec![0u8; 16 << 10];
-    while let Ok(n) = r.read(&mut chunk).await {
-        if n == 0 {
-            break;
-        }
-        capture.push(&chunk[..n]);
-    }
-}
-
-/// The file's bytes, or a notice in their place past the size cap; `None` when the script wrote none.
-async fn read_capped(path: &Path) -> Option<Vec<u8>> {
-    let file = tokio::fs::File::open(path).await.ok()?;
-    let mut raw = Vec::new();
-    file.take(MAX_RESULT_BYTES + 1)
-        .read_to_end(&mut raw)
-        .await
-        .ok()?;
-    if raw.len() as u64 > MAX_RESULT_BYTES {
-        let notice = format!(
-            "\"more than {MAX_RESULT_BYTES} bytes; write it to a file and return the path\""
-        );
-        return Some(notice.into_bytes());
-    }
-    Some(raw)
-}
-
-fn failure(status: ExitStatus, stderr: &str) -> Option<Value> {
-    if status.success() {
-        return None;
-    }
-    if let Some(signal) = status.signal() {
-        return Some(
-            json!({"kind": "interrupted", "message": format!("the run was killed by signal {signal}")}),
-        );
-    }
-    let lines: Vec<&str> = stderr
-        .lines()
-        .filter(|l| !l.trim().is_empty() && !l.starts_with("[info]") && !l.starts_with("Node.js v"))
-        .collect();
-    let mut error = json!({"kind": "exception"});
-    error["message"] = lines[lines.len().saturating_sub(ERROR_LINES)..]
-        .join("\n")
-        .into();
-    Some(error)
-}
-
 async fn prune(shots: &Path) {
     let Ok(mut dir) = tokio::fs::read_dir(shots).await else {
         return;
@@ -546,111 +218,5 @@ async fn prune(shots: &Path) {
     names.sort_unstable();
     for old in names.iter().rev().skip(KEPT_SHOTS) {
         let _ = tokio::fs::remove_file(old).await;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn a_run_ends_when_main_returns_though_a_timer_or_server_stays_open() {
-        let Some(node) = std::env::var_os("NODE_BIN") else {
-            eprintln!("SKIP: no Node; set NODE_BIN to run");
-            return;
-        };
-        let dir = tempfile::tempdir().unwrap();
-        let scripts = Scripts::new(node.into(), dir.path().into(), "/run/t.sock".into(), None);
-        for code in [
-            "setInterval(() => {}, 1000)\nexport function main(p) { console.log('tick'); return p.n }",
-            "import { createServer } from 'node:net'\ncreateServer().listen(0)\nexport async function main(p) { console.log('tick'); return p.n }",
-        ] {
-            let started = Instant::now();
-            let report = scripts
-                .run_script(
-                    &scripts.bin,
-                    Script::Code(code.to_owned()),
-                    r#"{"n":7}"#,
-                    dir.path(),
-                    Duration::from_secs(20),
-                    "run",
-                )
-                .await
-                .unwrap();
-            assert!(started.elapsed() < Duration::from_secs(5), "{report}");
-            assert_eq!(report["result"], 7, "{report}");
-            assert_eq!(report["logs"], "tick", "{report}");
-            assert_eq!(report["exit_code"], 0, "{report}");
-            assert!(report.get("error").is_none(), "{report}");
-        }
-    }
-
-    #[tokio::test]
-    async fn a_script_reaches_the_toolhost_and_the_flows_of_its_workspace() {
-        let Some(node) = std::env::var_os("NODE_BIN") else {
-            eprintln!("SKIP: no Node; set NODE_BIN to run");
-            return;
-        };
-        let dir = tempfile::tempdir().unwrap();
-        let scripts = Scripts::new(node.into(), dir.path().into(), "/run/t.sock".into(), None);
-        let report = scripts
-            .run_script(
-                &scripts.bin,
-                Script::Code("export function main() { return [process.env.TOOLHOST_SOCKET, process.env.SHUTTLE_FLOWS] }".to_owned()),
-                "{}",
-                dir.path(),
-                Duration::from_secs(20),
-                "run",
-            )
-            .await
-            .unwrap();
-        assert_eq!(report["result"][0], "/run/t.sock", "{report}");
-        assert_eq!(
-            report["result"][1],
-            dir.path().join("flows").to_string_lossy().as_ref(),
-            "{report}"
-        );
-    }
-
-    #[test]
-    fn process_group_reads_past_a_command_name_with_spaces_and_parens() {
-        assert_eq!(
-            process_group("4242 (node (x) y) S 1 777 777 0 -1"),
-            Some(777)
-        );
-        assert_eq!(process_group("garbage"), None);
-    }
-
-    #[test]
-    fn a_run_spares_only_the_apps_in_app_scopes_of_their_own() {
-        let own = "0::/system.slice/cocoonbox-toolhost.service\n";
-        let app =
-            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/x-app-mousepad-1.scope\n";
-        let session =
-            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-term-1.scope\n";
-        assert!(launched(own, app));
-        assert!(!launched(own, own));
-        assert!(!launched(session, session));
-        assert!(launched(session, app));
-        assert!(!launched(
-            own,
-            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/cua-driver.service\n"
-        ));
-    }
-
-    #[test]
-    fn failure_keeps_the_tail_of_stderr_without_info_lines() {
-        let stderr = "[info] Opening app Mousepad\nfile:///tmp/s.mts:20\nError: Instance has no visible top-level window\n    at x\n\nNode.js v24.21.0";
-        let error = failure(ExitStatus::from_raw(1 << 8), stderr).unwrap();
-        assert_eq!(error["kind"], "exception");
-        assert_eq!(
-            error["message"],
-            "file:///tmp/s.mts:20\nError: Instance has no visible top-level window\n    at x"
-        );
-        assert_eq!(
-            failure(ExitStatus::from_raw(9), "").unwrap()["kind"],
-            "interrupted"
-        );
-        assert!(failure(ExitStatus::from_raw(0), "").is_none());
     }
 }

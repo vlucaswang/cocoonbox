@@ -18,7 +18,6 @@ const ROOT_UID: &str = "0";
 const REDACTED: &str = "<redacted>";
 const DESKTOP_UNIT: &str = "cocoonbox-session.service";
 const SESSION_SAVE: &str = "/usr/local/lib/cocoonbox/session-save";
-const NODE_BIN: &str = "/usr/local/bin/node";
 const DESK_GUIDE: &str = "/opt/desk/AGENTS.md";
 const ANDROID_GUIDE: &str = "/opt/android/AGENTS.md";
 const TOOLS_DIR: &str = "/etc/cocoonbox/tools.d";
@@ -174,8 +173,6 @@ pub struct ToolhostConfig {
     pub chrome_profile: PathBuf,
     pub cdp_port: u16,
     pub cua_socket: PathBuf,
-    /// The program that runs scripts and GUI plans.
-    pub script_bin: PathBuf,
     pub session_save: PathBuf,
     pub home: PathBuf,
     /// The box's desktop automation.
@@ -219,7 +216,6 @@ impl ToolhostConfig {
                 |_| format!("{home}/.cache/cua-driver/cua-driver.sock").into(),
                 Into::into,
             ),
-            script_bin: optional("SCRIPT_BIN", NODE_BIN).into(),
             session_save: SESSION_SAVE.into(),
             home: home.into(),
             automation: Automation::detect(),

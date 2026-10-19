@@ -161,17 +161,12 @@ impl Drop for KillOnDrop<'_> {
 
 /// Head-and-tail capture of a command's output with the middle dropped.
 #[derive(Default)]
-pub(super) struct Capture {
+struct Capture {
     buf: Vec<u8>,
     dropped: usize,
 }
 
 impl Capture {
-    pub(super) fn push(&mut self, data: &[u8]) {
-        self.buf.extend_from_slice(data);
-        self.trim();
-    }
-
     fn trim(&mut self) {
         if self.buf.len() > HEAD_BYTES + TAIL_BYTES + SLACK_BYTES {
             let cut = self.buf.len() - TAIL_BYTES;
@@ -195,7 +190,7 @@ impl Capture {
         Some(code)
     }
 
-    pub(super) fn render(&self) -> String {
+    fn render(&self) -> String {
         let text = String::from_utf8_lossy(&self.buf);
         let text = text.trim_end_matches('\n');
         if self.dropped == 0 && text.len() <= HEAD_BYTES + TAIL_BYTES {

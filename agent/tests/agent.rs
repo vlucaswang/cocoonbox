@@ -17,6 +17,7 @@ use cocoonbox_agent::pb::{
     self, event, exec_client_frame, exec_server_frame, screen_client_frame, transcript_entry::Body,
 };
 use cocoonbox_agent::runner::Runtime;
+use cocoonbox_agent::toolhost::rpc::{Call, Output, read_frame, write_frame};
 use cocoonbox_agent::toolhost::state::Root;
 use cocoonbox_agent::{offload, server, toolhost};
 use ed25519_dalek::SigningKey;
@@ -32,13 +33,6 @@ use tonic::{Code, Request};
 
 use common::{owner, sign_credential, write_identity};
 
-const FAKE_NODE: &str = r#"src=$(cat "$CB_SCRIPT")
-case "$src" in
-*boom*) echo "Error: boom" >&2; exit 1 ;;
-*hang*) sleep 300 & echo $! > grandchild.pid; sleep 300 ;;
-*leftover*) sleep 300 & echo $! > leftover.pid; echo left; printf 7 > "$CB_RESULT" ;;
-*) echo "ran $1 in $PWD"; printf '{"params":%s}' "$CB_PARAMS" > "$CB_RESULT"; printf outline > "$CB_SNAPSHOT" ;;
-esac"#;
 const DEMO_ROUTING: &str = "Loops over demo items go to demo_run.";
 const PNG: &str = "iVBORw0KGgoAAAANSUhEUg==";
 const FAKE_ADB: &str = r#"echo "$*" >> "$0.log"
@@ -203,18 +197,13 @@ impl Harness {
         fake_cua(&cua_socket, Arc::clone(&cua_log));
         let session_save = dir.path().join("session-save");
         write_script(&session_save, "echo saved >> \"$0.log\"");
-        let script_bin = dir.path().join("script-bin");
-        write_script(&script_bin, FAKE_NODE);
         let adb_bin = dir.path().join("adb");
         write_script(&adb_bin, FAKE_ADB);
         let tools_dir = dir.path().join("tools.d");
         let routing_dir = dir.path().join("routing.d");
         if plugin {
             let plugin_bin = dir.path().join("demo-bin");
-            write_script(
-                &plugin_bin,
-                &format!("echo \"$1\" >> plugin.log\n{FAKE_NODE}"),
-            );
+            write_script(&plugin_bin, "exit 0");
             let guide = dir.path().join("DEMO.md");
             std::fs::write(&guide, "demo guide").unwrap();
             std::fs::create_dir_all(&tools_dir).unwrap();
@@ -226,6 +215,11 @@ impl Harness {
         }
         let plugins = cocoonbox_agent::plugins::load(&tools_dir);
         let toolhost_socket = dir.path().join("toolhost.sock");
+        let shuttle_socket = (automation == Automation::Desk).then(|| {
+            let socket = dir.path().join("desk.sock");
+            fake_shuttle(&socket, dir.path().join("shuttle.log"));
+            socket
+        });
         let (chrome_bin, cdp_port) = match chrome {
             Some(bin) => {
                 let wrapper = dir.path().join("chrome-headless");
@@ -248,13 +242,12 @@ impl Harness {
             chrome_profile: dir.path().join("chrome"),
             cdp_port,
             cua_socket,
-            script_bin,
             session_save: session_save.clone(),
             home: home.clone(),
             automation,
             plugins: plugins.clone(),
             adb_bin,
-            shuttle_socket: None,
+            shuttle_socket,
         };
         tokio::spawn(async move { toolhost::run(th_cfg).await });
         let cfg = ServeConfig {
@@ -720,6 +713,37 @@ fn fake_cua(path: &Path, log: Log) {
                 let reply = json!({"ok": true, "result": result}).to_string() + "\n";
                 stream.write_all(reply.as_bytes()).await.unwrap();
             });
+        }
+    });
+}
+
+/// A fake shuttle on `path` that logs each call's tool to `log`: a run answers as shuttle's runner, a plan with `ok`.
+fn fake_shuttle(path: &Path, log: PathBuf) {
+    let listener = UnixListener::bind(path).unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (mut conn, _) = listener.accept().await.unwrap();
+            let call: Call = read_frame(&mut conn).await.unwrap();
+            let mut logged = std::fs::read_to_string(&log).unwrap_or_default();
+            logged.push_str(&call.tool);
+            logged.push('\n');
+            std::fs::write(&log, logged).unwrap();
+            let out = match call.tool.as_str() {
+                "gui_plan" => Output::text(json!({"ok": true}).to_string()),
+                tool if tool.starts_with("desk_") => Output::text("{}"),
+                tool => {
+                    let source = match call.args["script"].as_str() {
+                        Some(path) => std::fs::read_to_string(path).unwrap(),
+                        None => call.args["code"].as_str().unwrap().to_owned(),
+                    };
+                    if source.contains("boom") {
+                        Output::error(json!({"duration_ms": 1, "exit_code": 1, "result": null, "logs": "", "stderr": "Error: boom", "error": {"kind": "exception", "message": "Error: boom"}}).to_string())
+                    } else {
+                        Output::text(json!({"duration_ms": 1, "exit_code": 0, "result": {"params": call.args["params"]}, "logs": format!("ran {tool}"), "stderr": "", "snapshot": "outline"}).to_string())
+                    }
+                }
+            };
+            write_frame(&mut conn, &out).await.unwrap();
         }
     });
 }
@@ -3584,22 +3608,11 @@ async fn reports_result_logs_and_a_screenshot(h: &Harness, tool: &str) {
 }
 
 #[tokio::test]
-async fn mcp_script_run_stops_a_run_past_its_timeout_with_its_children() {
-    stops_a_run_past_its_timeout(&Harness::with_desk(Vec::new()).await, "script_run").await;
-}
-
-#[tokio::test]
-async fn mcp_plugin_runs_its_scripts_with_its_own_program() {
+async fn mcp_plugin_runs_on_shuttle_as_its_own_tool() {
     let h = Harness::with_plugin(Vec::new()).await;
     reports_result_logs_and_a_screenshot(&h, "demo_run").await;
-    let ran = std::fs::read_to_string(h.workspace.join("plugin.log")).unwrap();
-    assert_eq!(ran.lines().count(), 2, "{ran}");
-    assert!(ran.lines().all(|l| l.ends_with("entry.mjs")), "{ran}");
-}
-
-#[tokio::test]
-async fn mcp_plugin_stops_a_run_past_its_timeout_with_its_children() {
-    stops_a_run_past_its_timeout(&Harness::with_plugin(Vec::new()).await, "demo_run").await;
+    let ran = std::fs::read_to_string(h._dir.path().join("shuttle.log")).unwrap();
+    assert_eq!(ran, "demo_run\ndemo_run\n");
 }
 
 #[tokio::test]
@@ -3676,7 +3689,10 @@ async fn a_box_without_the_desk_ignores_its_plugins() {
             out["error"]["message"], "unknown tool: demo_run",
             "{automation:?}: {out}"
         );
-        assert!(!h.workspace.join("plugin.log").exists(), "{automation:?}");
+        assert!(
+            !h._dir.path().join("shuttle.log").exists(),
+            "{automation:?}"
+        );
     }
 }
 
@@ -3887,76 +3903,8 @@ async fn a_plugin_box_gives_its_loop_the_plugin_and_the_routing_extra() {
     let result = chats[1]["messages"].as_array().unwrap().last().unwrap();
     let report: Value = serde_json::from_str(result["content"].as_str().unwrap()).unwrap();
     assert_eq!(report["result"], json!({"params": {"n": 2}}), "{report}");
-    assert!(h.workspace.join("plugin.log").exists());
-}
-
-async fn stops_a_run_past_its_timeout(h: &Harness, tool: &str) {
-    let mut mcp = McpClient::connect(h).await;
-
-    let started = std::time::Instant::now();
-    let out = mcp
-        .call(
-            tool,
-            json!({"code": "hang", "timeout_s": 1, "screenshot": false}),
-        )
-        .await;
-    assert!(
-        started.elapsed() < Duration::from_secs(10),
-        "{:?}",
-        started.elapsed()
-    );
-    assert_eq!(out["isError"], true, "{out}");
-    let report: Value = serde_json::from_str(out["content"][0]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(report["error"]["kind"], "timeout", "{report}");
-    assert!(!h.workspace.join("released.log").exists());
-    let pid = std::fs::read_to_string(h.workspace.join("grandchild.pid")).unwrap();
-    let proc = PathBuf::from(format!("/proc/{}", pid.trim()));
-    let mut alive = true;
-    for _ in 0..50 {
-        let state = std::fs::read_to_string(proc.join("stat")).unwrap_or_default();
-        alive = !state.is_empty() && !state.contains(") Z ");
-        if !alive {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert!(!alive, "the script's child survived the timeout");
-}
-
-#[tokio::test]
-async fn mcp_script_run_returns_once_the_script_exits_and_kills_a_child_that_holds_its_output() {
-    let h = Harness::with_desk(Vec::new()).await;
-    let mut mcp = McpClient::connect(&h).await;
-
-    let started = std::time::Instant::now();
-    let out = mcp
-        .call(
-            "script_run",
-            json!({"code": "leftover", "timeout_s": 20, "screenshot": false}),
-        )
-        .await;
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        started.elapsed()
-    );
-    assert_eq!(out["isError"], false, "{out}");
-    let report: Value = serde_json::from_str(out["content"][0]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(report["result"], 7, "{report}");
-    assert_eq!(report["logs"], "left", "{report}");
-    assert_eq!(report["exit_code"], 0, "{report}");
-    let pid = std::fs::read_to_string(h.workspace.join("leftover.pid")).unwrap();
-    let proc = PathBuf::from(format!("/proc/{}", pid.trim()));
-    let mut alive = true;
-    for _ in 0..50 {
-        let state = std::fs::read_to_string(proc.join("stat")).unwrap_or_default();
-        alive = !state.is_empty() && !state.contains(") Z ");
-        if !alive {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert!(!alive, "the child holding the script's output survived");
+    let ran = std::fs::read_to_string(h._dir.path().join("shuttle.log")).unwrap();
+    assert_eq!(ran, "demo_run\n");
 }
 
 #[tokio::test]
@@ -4102,14 +4050,8 @@ async fn mcp_gui_plan_keeps_a_static_description_and_lists_saved_flows_on_reques
     let out = mcp
         .call("gui_plan", json!({"steps": [{"app": "mousepad"}]}))
         .await;
-    assert_eq!(out["isError"], true, "{out}");
-    assert!(
-        out["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("/opt/desk/lib/gui_plan.mts does not exist"),
-        "{out}"
-    );
+    assert_eq!(out["isError"], false, "{out}");
+    assert_eq!(out["content"][0]["text"], r#"{"ok":true}"#, "{out}");
 }
 
 #[tokio::test]

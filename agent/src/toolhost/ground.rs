@@ -2,7 +2,6 @@
 //! unique OCR match of the target's visible text, or of the label its description names, outside window
 //! titles; neither finding it, or either failing, leaves the grounding to the caller.
 
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -77,13 +76,7 @@ struct Word {
 
 /// Runs `computer_act` with `target`: `locate` only finds it, `click` also presses it; returns the
 /// tier that found it, the point in the caller's screenshot pixels and a crop around it.
-pub async fn act(
-    cua: &Cua,
-    desk: &Desk,
-    scripts: &Scripts,
-    workspace: &Path,
-    args: Value,
-) -> Result<Output, String> {
+pub async fn act(cua: &Cua, desk: &Desk, scripts: &Scripts, args: Value) -> Result<Output, String> {
     let k = cua.screenshot_scale(&args);
     let a: TargetArgs = rpc::parse(args)?;
     let press = match a.action.as_str() {
@@ -93,7 +86,7 @@ pub async fn act(
     };
     let start = Instant::now();
     let mut found = scripts
-        .locate(workspace, &a.target.description, press)
+        .locate(&a.target.description, press)
         .await
         .unwrap_or_else(|e| json!({"found": false, "why": e}));
     timing::mark("a11y");
