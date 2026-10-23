@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import base64
-import difflib
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import hashlib
 import html
@@ -23,10 +24,19 @@ HERE = Path(__file__).resolve().parent
 MAX_DURATION = 4 * 3600
 MAX_DOWNLOAD = 2 * 1024**3
 DEFAULT_OCR_BASE_URL = 'http://192.168.10.109:12340/v1'
-DEFAULT_OCR_MODEL = 'PaddleOCR-VL-1.6-GGUF'
-OCR_PROTOCOL_VERSION = 1
+DEFAULT_OCR_MODEL = 'PaddleOCR-VL-1.6-MLX-8bit'
+OCR_PROTOCOL_VERSION = 6
+OCR_MAX_TOKENS = 4096
+OCR_REPETITION_PENALTY = 1.3
+OCR_MAX_CONCURRENCY = 4
 OCR_TIMEOUT = 120
 OCR_RESPONSE_LIMIT = 2 * 1024 * 1024
+
+
+class OCRTokenLimitError(RuntimeError):
+    pass
+
+
 OCR_UI_LABELS = frozenset(('1x', '回顾', '隐藏', '自动中', '自动'))
 OCR_FILTER_VERSION = 1
 
@@ -216,10 +226,6 @@ def download(url, folder):
     return paths[-1]
 
 
-def normalized(text):
-    return re.sub(r'\W+', '', text).casefold()
-
-
 def clean_ocr_text(text):
     """Drop standalone player controls while preserving words inside dialogue."""
     return '\n'.join(line.strip() for line in text.splitlines()
@@ -228,14 +234,12 @@ def clean_ocr_text(text):
 
 def merge_segments(segments, start, end, text):
     text = clean_ocr_text(text)
-    key = normalized(text)
-    if not key:
+    if not text:
         return
-    if segments and start <= segments[-1]['end'] + 0.05:
-        previous = normalized(segments[-1]['text'])
-        if key == previous or difflib.SequenceMatcher(None, previous, key).ratio() >= 0.94:
-            segments[-1]['end'] = end
-            return
+    if (segments and start <= segments[-1]['end'] + 0.05
+            and text == segments[-1]['text']):
+        segments[-1]['end'] = end
+        return
     segments.append({'start': start, 'end': end, 'text': text})
 
 
@@ -264,28 +268,45 @@ def recognize(frame, settings):
     endpoint = settings['base_url'] + '/chat/completions'
     model = settings['model']
     context = f'Remote OCR at {endpoint} using model {model}'
+    api_key = os.environ.get('CB_OCR_API_KEY')
+    if api_key is None:
+        try:
+            api_key = (HERE / 'ocr-api-key').read_text().strip()
+        except FileNotFoundError:
+            api_key = ''
+    api_key = api_key.strip()
+    if any(char in api_key for char in '\r\n'):
+        raise ValueError('OCR API key must not contain line breaks')
+    headers = {'Content-Type': 'application/json'}
+    if api_key:
+        headers['Authorization'] = 'Bearer ' + api_key
+
+    def safe_detail(text):
+        if api_key:
+            text = text.replace(api_key, '[key omitted]')
+        return ocr_error_detail(text)
+
     image = base64.b64encode(frame.read_bytes()).decode('ascii')
-    payload = {'model': model, 'temperature': 0, 'stream': False, 'max_tokens': 2048,
+    payload = {'model': model, 'temperature': 0, 'stream': False, 'max_tokens': OCR_MAX_TOKENS,
+               'repetition_penalty': OCR_REPETITION_PENALTY,
                'messages': [{'role': 'user', 'content': [
-                   {'type': 'text', 'text': 'OCR: Transcribe all visible text in this image exactly. '
-                    'Preserve the original language and line breaks. Return only the recognized text, '
-                    'without explanations or Markdown fences. Return an empty string if there is no text.'},
-                   {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + image}}]}]}
+                   {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + image}},
+                   {'type': 'text', 'text': 'OCR:'}]}]}
     request = urllib.request.Request(endpoint, data=json.dumps(payload).encode('utf-8'),
-                                     headers={'Content-Type': 'application/json'}, method='POST')
+                                     headers=headers, method='POST')
     try:
         with urllib.request.urlopen(request, timeout=OCR_TIMEOUT) as response:
             raw = response.read(OCR_RESPONSE_LIMIT + 1)
     except urllib.error.HTTPError as error:
         with error:
             try:
-                detail = ocr_error_detail(error.read(4096).decode('utf-8', errors='replace'))
+                detail = safe_detail(error.read(4096).decode('utf-8', errors='replace'))
             except (OSError, http.client.HTTPException):
                 detail = 'Could not read the server error body'
         raise RuntimeError(f'{context} failed with HTTP {error.code}: {detail}. '
                            'Check the server supports image input and the configured model.') from error
     except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
-        raise RuntimeError(f'{context} could not complete the request: {error}. '
+        raise RuntimeError(f'{context} could not complete the request: {safe_detail(str(error))}. '
                            'Check the server, proxy, and exact host/port egress policy.') from error
     if len(raw) > OCR_RESPONSE_LIMIT:
         raise RuntimeError(f'{context} returned a response larger than {OCR_RESPONSE_LIMIT} bytes')
@@ -296,7 +317,7 @@ def recognize(frame, settings):
     if not isinstance(result, dict):
         raise RuntimeError(f'{context} returned an invalid response object')
     if result.get('error'):
-        detail = ocr_error_detail(json.dumps(result['error'], ensure_ascii=False))
+        detail = safe_detail(json.dumps(result['error'], ensure_ascii=False))
         raise RuntimeError(f'{context} returned an API error: {detail}. Check the server image support and model.')
     choices = result.get('choices')
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -308,44 +329,189 @@ def recognize(frame, settings):
     if message.get('refusal') or choice.get('finish_reason') == 'content_filter':
         raise RuntimeError(f'{context} refused image recognition. Check the server and model.')
     if choice.get('finish_reason') == 'length':
-        raise RuntimeError(f'{context} truncated the recognized text at its token limit. '
-                           'Check the server token limit before retrying.')
+        content = message.get('content')
+        preview = repr(safe_detail(content))[:500] if isinstance(content, str) else '[unavailable]'
+        raise OCRTokenLimitError(f'{context} truncated the recognized text with client max_tokens={OCR_MAX_TOKENS}. '
+                           f'Check the server token limit before retrying. Output preview: {preview}')
     if choice.get('finish_reason') != 'stop':
         raise RuntimeError(f'{context} returned an incomplete or unsupported finish_reason')
     text = message.get('content')
+    if (text is None and isinstance(result.get('usage'), dict)
+            and result['usage'].get('completion_tokens') == 0
+            and not message.get('tool_calls') and not message.get('function_call')):
+        return ''
     if not isinstance(text, str):
         raise RuntimeError(f'{context} returned missing or non-string message content')
     return text
 
 
+def tile_bounds(width, height):
+    return [(0, 0, width, (3 * height + 4) // 5),
+            (0, height // 2, width, height)]
+
+
+def recognize_frame(images, bounds, settings):
+    reading = {'tiles': [], 'text': '', 'complete': False}
+    for image, bound in zip(images, bounds):
+        tile = {'bounds': bound}
+        reading['tiles'].append(tile)
+        try:
+            try:
+                tile['raw_text'] = recognize(image, settings)
+            except OCRTokenLimitError as error:
+                if bound is None:
+                    raise
+                width, height = bound[2] - bound[0], bound[3] - bound[1]
+                children = tile_bounds(width, height)
+                paths = [image.with_name(f'{image.stem}-recovery-{index}.jpg') for index in range(2)]
+                filters = ('split=2[a][b];'
+                           f'[a]crop={width}:{children[0][3]}:0:0:exact=1[t];'
+                           f'[b]crop={width}:{height-children[1][1]}:0:{children[1][1]}:exact=1[b]')
+                command = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-i', str(image),
+                           '-filter_complex', filters]
+                for label, path in zip(('[t]', '[b]'), paths):
+                    command += ['-map', label, '-frames:v', '1', '-q:v', '3', '-threads', '1', str(path)]
+                result = subprocess.run(command, capture_output=True, timeout=30)
+                if result.returncode or not all(path.is_file() for path in paths):
+                    raise RuntimeError('FFmpeg could not split a truncated OCR tile') from error
+                tile['recovery'] = {'reason': ocr_error_detail(str(error)), 'tiles': []}
+                for path, child in zip(paths, children):
+                    observation = {'bounds': [bound[0] + child[0], bound[1] + child[1],
+                                               bound[0] + child[2], bound[1] + child[3]]}
+                    tile['recovery']['tiles'].append(observation)
+                    observation['raw_text'] = recognize(path, settings)
+                tile['raw_text'] = '\n'.join(child['raw_text'] for child in tile['recovery']['tiles'])
+        except Exception as error:
+            tile['error'] = ocr_error_detail(str(error))
+            reading['error'] = tile['error']
+            return reading
+        reading['text'] = '\n'.join(tile['raw_text'] for tile in reading['tiles'])
+    reading['complete'] = True
+    return reading
+
+
 def ocr(video, folder, duration, interval, region, settings):
     segments = []
     processed = 0
-    total = math.ceil(duration / interval)
-    with tempfile.TemporaryDirectory(prefix='frames-', dir=folder) as scratch:
+    total = max(1, math.floor(duration / interval + 1e-9))
+    bounds = [None]
+    if region == 'full':
+        probe = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                                '-show_entries', 'stream=width,height,duration', '-of', 'json', str(video)],
+                               capture_output=True, timeout=30)
+        if probe.returncode:
+            raise RuntimeError('FFprobe could not determine native frame dimensions')
+        stream = json.loads(probe.stdout)['streams'][0]
+        width, height = stream['width'], stream['height']
+        if width <= 0 or height <= 0:
+            raise RuntimeError('Invalid native frame dimensions')
+        # Container duration can include an audio tail after the video track ends.
+        # Sample only the visible stream, while keeping metadata duration in the document.
+        try:
+            video_duration = float(stream.get('duration'))
+        except (TypeError, ValueError):
+            video_duration = duration
+        if video_duration <= 0:
+            raise RuntimeError('FFprobe returned an invalid video stream duration')
+        if video_duration < duration:
+            duration = video_duration
+            total = max(1, math.floor(duration / interval + 1e-9))
+            update(folder, video_duration=duration, frames_estimated=total)
+        bounds = tile_bounds(width, height)
+    ledger = folder / 'frames.raw.jsonl'
+    prefix = []
+    if ledger.exists():
+        for line in ledger.read_text().splitlines():
+            reading = json.loads(line)
+            if not reading.get('complete'):
+                break
+            start = processed * interval
+            if (reading.get('protocol_version') != OCR_PROTOCOL_VERSION
+                    or reading.get('start') != start
+                    or reading.get('end') != min(start + interval, duration)
+                    or [tile.get('bounds') for tile in reading.get('tiles', [])]
+                    != [list(bound) if bound is not None else None for bound in bounds]
+                    or not isinstance(reading.get('text'), str)):
+                raise RuntimeError('Saved OCR evidence does not match this job; cannot resume safely')
+            merge_segments(segments, start, reading['end'], reading['text'])
+            prefix.append(line)
+            processed += 1
+        os.link(ledger, folder / f'frames.raw.previous-{time.time_ns()}.jsonl')
+    prepared_ledger = ledger.with_suffix('.jsonl.resume.tmp')
+    prepared_ledger.write_text(''.join(line + '\n' for line in prefix))
+    prepared_ledger.replace(ledger)
+    with tempfile.TemporaryDirectory(prefix='frames-', dir=folder) as scratch, ledger.open('a') as evidence:
+        if prefix:
+            atomic_json(folder / 'segments.partial.json', segments)
+            update(folder, phase='ocr', frames_processed=processed, frames_estimated=total,
+                   progress=min(0.99, processed / total))
         frames = Path(scratch)
-        for chunk_start in range(0, math.ceil(duration), 60):
+        for chunk_start in range(int(processed * interval), math.ceil(duration), 60):
             chunk_length = min(60, duration - chunk_start)
-            crop = 'crop=iw:ih*0.38:0:ih*0.62,' if region == 'subtitles' else ''
-            vf = f'fps=1/{interval},' + crop + "scale=1600:-2"
-            result = subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-ss',
-                                     str(chunk_start), '-i', str(video), '-t', str(chunk_length),
-                                     '-vf', vf, '-q:v', '3', '-threads', '1', str(frames / '%06d.jpg')],
-                                    capture_output=True, timeout=180)
+            command = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-ss',
+                       str(chunk_start), '-t', str(chunk_length), '-noautorotate', '-i', str(video)]
+            if region == 'full':
+                top, bottom = bounds
+                filters = (f'fps=1/{interval}:start_time=0:eof_action=pass,'
+                           f'trim=duration={chunk_length},split=2[top][bottom];'
+                           f'[top]crop={width}:{top[3]}:0:0:exact=1[t];'
+                           f'[bottom]crop={width}:{height-bottom[1]}:0:{bottom[1]}:exact=1[b]')
+                command += ['-filter_complex', filters]
+                for label, name in (('[t]', 'top'), ('[b]', 'bottom')):
+                    command += ['-map', label, '-q:v', '3', '-threads', '1',
+                                str(frames / (name + '-%06d.jpg'))]
+            else:
+                command += ['-vf', f'fps=1/{interval},crop=iw:ih*0.38:0:ih*0.62,scale=1600:-2',
+                            '-q:v', '3', '-threads', '1', str(frames / '%06d.jpg')]
+            result = subprocess.run(command, capture_output=True, timeout=180)
             if result.returncode:
                 raise RuntimeError('FFmpeg frame extraction failed: ' + result.stderr.decode(errors='replace')[-500:])
-            images = sorted(frames.glob('*.jpg'))
-            for index, frame in enumerate(images):
-                text = recognize(frame, settings)
-                start = chunk_start + index * interval
-                merge_segments(segments, start, min(start + interval, duration), text)
-                processed += 1
-            for frame in images:
+            if region == 'full':
+                tops = sorted(frames.glob('top-*.jpg'))
+                bottoms = sorted(frames.glob('bottom-*.jpg'))
+                if not tops or [p.name[4:] for p in tops] != [p.name[7:] for p in bottoms]:
+                    raise RuntimeError('FFmpeg produced missing or mismatched frame tile pairs')
+                # fps emits one image per complete interval; a fractional tail adds no sample.
+                expected_count = max(1, math.floor(chunk_length / interval + 1e-9))
+                expected = [f'{index:06d}.jpg' for index in range(1, expected_count + 1)]
+                if [p.name[4:] for p in tops] != expected:
+                    raise RuntimeError('FFmpeg sampled frame count or order does not cover the requested chunk')
+                images = list(zip(tops, bottoms))
+            else:
+                images = [(frame,) for frame in sorted(frames.glob('*.jpg'))]
+                if not images:
+                    raise RuntimeError('FFmpeg produced no sampled frames')
+            failure = None
+            with ThreadPoolExecutor(max_workers=OCR_MAX_CONCURRENCY) as executor:
+                remaining = iter(enumerate(images[OCR_MAX_CONCURRENCY:], OCR_MAX_CONCURRENCY))
+                pending = deque((index, executor.submit(recognize_frame, pair, bounds, settings))
+                                for index, pair in enumerate(images[:OCR_MAX_CONCURRENCY]))
+                try:
+                    while pending:
+                        index, future = pending.popleft()
+                        reading = future.result()
+                        start = chunk_start + index * interval
+                        reading.update(start=start, end=min(start + interval, duration),
+                                       protocol_version=OCR_PROTOCOL_VERSION)
+                        evidence.write(json.dumps(reading, ensure_ascii=False) + '\n')
+                        evidence.flush()
+                        if not reading['complete'] and failure is None:
+                            failure = reading['error']
+                        if failure is None:
+                            merge_segments(segments, start, reading['end'], reading['text'])
+                            processed += 1
+                            next_frame = next(remaining, None)
+                            if next_frame is not None:
+                                next_index, pair = next_frame
+                                pending.append((next_index, executor.submit(recognize_frame, pair, bounds, settings)))
+                finally:
+                    atomic_json(folder / 'segments.partial.json', segments)
+                    update(folder, phase='ocr', frames_processed=processed, frames_estimated=total,
+                           progress=min(0.99, processed / total))
+            if failure is not None:
+                raise RuntimeError(failure)
+            for frame in frames.glob('*.jpg'):
                 frame.unlink()
-            update(folder, phase='ocr', frames_processed=processed, frames_estimated=total,
-                   progress=min(0.99, (chunk_start + chunk_length) / duration))
-            # Keep an honest partial result if processing is interrupted.
-            atomic_json(folder / 'segments.partial.json', segments)
     return segments
 
 

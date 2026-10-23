@@ -36,7 +36,7 @@ func TestAddCreatesAGeneratedKey(t *testing.T) {
 		t.Fatalf("Add = %q, %q, %v", key, id, err)
 	}
 	got := gw.key(akID(key))
-	want := map[string]any{"ak_id": akID(key), "product": "cocoonbox", "tenant": "cocoonbox-boxes", "owner": owner, "qps": 40.0, "daily_token_quota": 5e6, "tokens_per_minute": 2.4e6}
+	want := map[string]any{"ak_id": akID(key), "product": "cocoonbox", "tenant": "cocoonbox-boxes", "owner": owner, "qps": 40.0, "daily_token_quota": 50e6, "tokens_per_minute": 2.4e6}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("created %v, want %v", got, want)
 	}
