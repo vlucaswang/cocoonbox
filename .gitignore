@@ -9,6 +9,8 @@
 /image/vendor/
 /dist/
 /dist-extra/
+/outputs/
+/.audit/
 /.build/
 /Package.resolved
 /image/android/base/docker-data-*.tar
